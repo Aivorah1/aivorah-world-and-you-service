@@ -41,14 +41,20 @@ describe('GET /daily-tidbit', () => {
     getDailyTidbit.mockResolvedValue({ grade: 'Grade 3', gk: { fact: 'A fact' } });
     const res = await request(app).get('/daily-tidbit');
     expect(res.status).toBe(200);
-    expect(getDailyTidbit).toHaveBeenCalledWith('Grade 3', undefined);
+    expect(getDailyTidbit).toHaveBeenCalledWith('Grade 3', undefined, { withCurrentAffairs: false });
     expect(res.body.gk.fact).toBe('A fact');
   });
 
   test('passes through a real custom grade and bust param', async () => {
     getDailyTidbit.mockResolvedValue({ grade: 'Grade 5' });
     await request(app).get('/daily-tidbit?grade=Grade%205&bust=1');
-    expect(getDailyTidbit).toHaveBeenCalledWith('Grade 5', '1');
+    expect(getDailyTidbit).toHaveBeenCalledWith('Grade 5', '1', { withCurrentAffairs: false });
+  });
+
+  test('currentAffairs=1 asks for the old combined reply', async () => {
+    getDailyTidbit.mockResolvedValue({ grade: 'Grade 5' });
+    await request(app).get('/daily-tidbit?grade=Grade%205&currentAffairs=1');
+    expect(getDailyTidbit).toHaveBeenCalledWith('Grade 5', undefined, { withCurrentAffairs: true });
   });
 
   test('a service error maps to a real friendly 500 message', async () => {

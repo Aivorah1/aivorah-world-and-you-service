@@ -1,5 +1,6 @@
 const Groq  = require('groq-sdk');
 const axios = require('axios');
+const { within, fallbackGKFact } = require('./fastReply');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -288,27 +289,62 @@ function sanitizeGK(gk) {
   return { ...gk, fact };
 }
 
-async function getDailyTidbit(grade, bust) {
-  const key = cacheKey(grade);
+// GK fact for the GK tab. By default only the GK fact is made (current
+// affairs moved to the Current Affairs tab — pass withCurrentAffairs for the
+// old combined reply), and a request never waits for the AI longer than
+// FAST_REPLY_MS: a checked ready-made fact is sent instead (partial: true)
+// while the AI finishes in the background and fills the cache.
+const pendingGK = {};
 
-  if (cache[key] && !bust) {
-    return { ...cache[key], gk: sanitizeGK(cache[key].gk), cached: true };
+function generateGK(grade) {
+  const key = cacheKey(grade);
+  if (!pendingGK[key]) {
+    pendingGK[key] = generateGKFact(grade)
+      .then((gkRaw) => {
+        const result = { grade, date: todayStr(), gk: sanitizeGK(gkRaw), currentAffairs: cache[key]?.currentAffairs || null };
+        cache[key] = result;
+        return result;
+      })
+      .finally(() => { delete pendingGK[key]; });
+  }
+  return pendingGK[key];
+}
+
+async function getDailyTidbit(grade, bust, { withCurrentAffairs = false, fastReplyMs } = {}) {
+  const key = cacheKey(grade);
+  const cached = cache[key];
+
+  if (cached && !bust && (!withCurrentAffairs || cached.currentAffairs)) {
+    return { ...cached, gk: sanitizeGK(cached.gk), cached: true };
   }
 
-  const [gkRaw, currentAffairs] = await Promise.all([
-    generateGKFact(grade),
-    fetchCurrentAffairs(grade),
-  ]);
+  if (withCurrentAffairs) {
+    const [gkRaw, currentAffairs] = await Promise.all([
+      generateGKFact(grade),
+      fetchCurrentAffairs(grade),
+    ]);
+    const result = { grade, date: todayStr(), gk: sanitizeGK(gkRaw), currentAffairs };
+    cache[key] = result;
+    return result;
+  }
 
-  const result = {
-    grade,
-    date: todayStr(),
-    gk: sanitizeGK(gkRaw),
-    currentAffairs,
+  if (bust) delete cache[key];
+  const reply = await within(generateGK(grade), fastReplyMs);
+  if (reply.done && !reply.error) return reply.value;
+  if (reply.error) console.warn(`[daily-tidbit] GK fact failed for ${grade}:`, reply.error.message);
+  return { grade, date: todayStr(), gk: fallbackGKFact(), currentAffairs: null, partial: true };
+}
+
+// Prepare today's GK fact for every grade so the first students get it instantly.
+async function prewarmDailyTidbits(grades, { concurrency = 2 } = {}) {
+  const queue = grades.filter((g) => !cache[cacheKey(g)]);
+  const worker = async () => {
+    while (queue.length) {
+      const grade = queue.shift();
+      try { await generateGK(grade); } catch (e) { console.warn(`[daily-tidbit] prewarm ${grade}:`, e.message); }
+    }
   };
-
-  cache[key] = result;
-  return result;
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
 }
 
 // ── Option cleaner helper for quiz options ───────────────────────────
@@ -397,6 +433,7 @@ module.exports = {
   computeLevel,
   extractJSON,
   getDailyTidbit,
+  prewarmDailyTidbits,
   generateComprehensionQuiz,
   normalizeQuizQuestions,
 };

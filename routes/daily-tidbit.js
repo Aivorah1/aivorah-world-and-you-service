@@ -10,8 +10,9 @@ const {
 // ── GET /daily-tidbit?grade=Grade 3&bust=1 ───────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const { grade = 'Grade 3', bust } = req.query;
-    const result = await getDailyTidbit(grade, bust);
+    const { grade = 'Grade 3', bust, currentAffairs } = req.query;
+    // currentAffairs=1 keeps the old combined reply (GK + current affairs).
+    const result = await getDailyTidbit(grade, bust, { withCurrentAffairs: currentAffairs === '1' });
     res.json(result);
   } catch (err) {
     console.error('daily-tidbit error:', err.message);

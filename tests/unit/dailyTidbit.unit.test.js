@@ -181,23 +181,31 @@ describe('extractJSON', () => {
 });
 
 describe('getDailyTidbit', () => {
-  test('returns real GK fact and current-affairs content when no NEWS_API_KEY is set (fallback path)', async () => {
-    mockGroqCreate
-      .mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'Octopuses have three hearts.', category: 'Animals' })))
-      .mockResolvedValueOnce(groqResponse(JSON.stringify({ headline: 'World Update', summary: 'Something good happened.' })));
+  test('by default makes only the GK fact (current affairs moved to their own tab)', async () => {
+    mockGroqCreate.mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'Octopuses have three hearts.', category: 'Animals' })));
 
     const result = await getDailyTidbit('Grade 3 Unit A', false);
 
     expect(result.grade).toBe('Grade 3 Unit A');
     expect(result.gk.fact).toBe('Octopuses have three hearts.');
+    expect(result.currentAffairs).toBeNull();
+    expect(result.partial).toBeUndefined();
+    expect(mockGroqCreate).toHaveBeenCalledTimes(1);
+  });
+
+  test('withCurrentAffairs keeps the old combined reply', async () => {
+    mockGroqCreate
+      .mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'Octopuses have three hearts.', category: 'Animals' })))
+      .mockResolvedValueOnce(groqResponse(JSON.stringify({ headline: 'World Update', summary: 'Something good happened.' })));
+
+    const result = await getDailyTidbit('Grade 3 Unit A2', false, { withCurrentAffairs: true });
+
+    expect(result.gk.fact).toBe('Octopuses have three hearts.');
     expect(result.currentAffairs.headline).toBe('World Update');
-    expect(result.cached).toBeUndefined();
   });
 
   test('a second call for the same grade+day is served from the real in-memory cache (no new Groq calls)', async () => {
-    mockGroqCreate
-      .mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'Fact one', category: 'Science' })))
-      .mockResolvedValueOnce(groqResponse(JSON.stringify({ headline: 'H1', summary: 'S1' })));
+    mockGroqCreate.mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'Fact one', category: 'Science' })));
 
     await getDailyTidbit('Grade 3 Unit B', false);
     mockGroqCreate.mockClear();
@@ -212,9 +220,7 @@ describe('getDailyTidbit', () => {
   test('passing bust=true skips the cache and regenerates real fresh content', async () => {
     mockGroqCreate
       .mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'Old fact', category: 'Science' })))
-      .mockResolvedValueOnce(groqResponse(JSON.stringify({ headline: 'Old', summary: 'Old summary' })))
-      .mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'New fact', category: 'Space' })))
-      .mockResolvedValueOnce(groqResponse(JSON.stringify({ headline: 'New', summary: 'New summary' })));
+      .mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'New fact', category: 'Space' })));
 
     await getDailyTidbit('Grade 3 Unit C', false);
     const second = await getDailyTidbit('Grade 3 Unit C', true);
@@ -223,13 +229,35 @@ describe('getDailyTidbit', () => {
   });
 
   test('unwraps a GK fact that came back as a nested stringified JSON object', async () => {
-    mockGroqCreate
-      .mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: JSON.stringify({ fact: 'The real fact.' }), category: 'Science' })))
-      .mockResolvedValueOnce(groqResponse(JSON.stringify({ headline: 'H', summary: 'S' })));
+    mockGroqCreate.mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: JSON.stringify({ fact: 'The real fact.' }), category: 'Science' })));
 
     const result = await getDailyTidbit('Grade 3 Unit D', false);
 
     expect(result.gk.fact).toBe('The real fact.');
+  });
+
+  test('a slow AI never makes the student wait: a checked fact comes back at once, the AI fact is cached later', async () => {
+    let finish;
+    mockGroqCreate.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const quick = await getDailyTidbit('Grade 5 Slow', false, { fastReplyMs: 20 });
+    expect(quick.partial).toBe(true);
+    expect(quick.gk.fact).toBeTruthy();
+
+    finish(groqResponse(JSON.stringify({ fact: 'The AI fact.', category: 'Space' })));
+    await new Promise((r) => setTimeout(r, 0));
+    const later = await getDailyTidbit('Grade 5 Slow', false);
+    expect(later.gk.fact).toBe('The AI fact.');
+    expect(later.partial).toBeUndefined();
+  });
+
+  test('an AI error also answers with a checked fact instead of failing', async () => {
+    mockGroqCreate.mockRejectedValueOnce(new Error('rate limited'));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await getDailyTidbit('Grade 5 Error', false);
+    expect(result).toMatchObject({ partial: true, currentAffairs: null });
+    expect(result.gk.fact).toBeTruthy();
+    warn.mockRestore();
   });
 });
 
@@ -253,7 +281,7 @@ describe('fetchCurrentAffairs — with a real NEWS_API_KEY set', () => {
       .mockResolvedValueOnce(groqResponse('1')) // article-pick response
       .mockResolvedValueOnce(groqResponse(JSON.stringify({ headline: 'Volcano Found!', summary: 'Scientists found something cool.' })));
 
-    const result = await getDailyTidbit('Grade 4 Unit E', false);
+    const result = await getDailyTidbit('Grade 4 Unit E', false, { withCurrentAffairs: true });
 
     expect(result.currentAffairs.headline).toBe('Volcano Found!');
   });
@@ -264,7 +292,7 @@ describe('fetchCurrentAffairs — with a real NEWS_API_KEY set', () => {
       .mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'A fact', category: 'Science' })))
       .mockResolvedValueOnce(groqResponse(JSON.stringify({ headline: 'Fallback', summary: 'Fallback summary' })));
 
-    const result = await getDailyTidbit('Grade 4 Unit F', false);
+    const result = await getDailyTidbit('Grade 4 Unit F', false, { withCurrentAffairs: true });
 
     expect(result.currentAffairs.headline).toBe('Fallback');
   });
@@ -275,7 +303,7 @@ describe('fetchCurrentAffairs — with a real NEWS_API_KEY set', () => {
       .mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'A fact', category: 'Science' })))
       .mockResolvedValueOnce(groqResponse(JSON.stringify({ headline: 'Fallback2', summary: 'Fallback summary' })));
 
-    const result = await getDailyTidbit('Grade 4 Unit G', false);
+    const result = await getDailyTidbit('Grade 4 Unit G', false, { withCurrentAffairs: true });
 
     expect(result.currentAffairs.headline).toBe('Fallback2');
   });

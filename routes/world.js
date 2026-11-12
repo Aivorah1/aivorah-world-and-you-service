@@ -1,7 +1,7 @@
 /**
  * routes/world.js
- * "The World & You" — GK facts, On This Day, Current Affairs
- * Uses Groq LLM + NewsAPI for real, age-appropriate daily content
+ * "The World & You" — On This Day (Wikipedia) + Fun Challenge (Groq) per grade.
+ * Answers within ~2 s even when the AI is slow (partial: true) — see services/world.js.
  */
 const express = require('express');
 const router  = express.Router();

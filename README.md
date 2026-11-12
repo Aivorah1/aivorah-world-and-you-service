@@ -32,10 +32,10 @@ Runs on `PORT` (default `3010`).
 
 ## Endpoints
 
-- `GET /daily-tidbit?grade=&bust=` — today's GK Fact + Current Affairs (grade-specific, cached per day)
+- `GET /daily-tidbit?grade=&bust=&currentAffairs=1` — today's GK Fact (grade-specific, cached per day); `currentAffairs=1` also adds the old current-affairs item. Answers within ~2 s: if the AI is slow a checked fact is returned with `partial: true`
 - `POST /daily-tidbit/quiz` — generate 2 MCQ comprehension questions from a current-affairs article
 - `POST /daily-tidbit/quiz-complete` — award XP for quiz results
-- `GET /world/daily?grade=` — On This Day (3 events), GK Fact, Fun Challenge, Current Affairs
+- `GET /world/daily?grade=` — On This Day (3 real events from Wikipedia's feed, child-safe filter), Fun Challenge (AI; a ready-made puzzle with `partial: true` if the AI is slow). Every grade is prepared at start-up and when the date changes (`PREWARM=off` disables)
 - `GET /health`
 
 ## Known gaps (carried over from the monolith, not introduced here)
