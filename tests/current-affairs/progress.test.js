@@ -22,14 +22,14 @@ afterEach(() => jest.useRealTimers());
 const onDay = (date) => jest.setSystemTime(new Date(`${date}T06:30:00Z`));
 
 const post = (path, body, email = EMAIL) =>
-  request(app).post(`/current-affairs/progress/${path}`).set(auth(email)).send({ studentEmail: email, ageGroup: '8-12', ...body });
-const getProgress = (query = '?ageGroup=8-12', email = EMAIL) =>
+  request(app).post(`/current-affairs/progress/${path}`).set(auth(email)).send({ studentEmail: email, ageGroup: '7-12', ...body });
+const getProgress = (query = '?ageGroup=7-12', email = EMAIL) =>
   request(app).get(`/current-affairs/progress/${encodeURIComponent(email)}${query}`).set(auth(email));
 
 function seedAttempt(percentage, weekStart = '2026-11-08') {
   supabase.__seed('ca_quiz_attempts', [{
     id: `00000000-0000-4000-8000-0000000000${String(percentage).padStart(2, '0')}`,
-    student_email: EMAIL, age_group: '8-12', week_start: weekStart,
+    student_email: EMAIL, age_group: '7-12', week_start: weekStart,
     answers: [], score: percentage / 10, total: 10, percentage, points_awarded: false, points_earned: 0,
   }]);
 }
@@ -39,7 +39,7 @@ describe('GET /current-affairs/progress/:studentEmail', () => {
     const res = await getProgress();
     expect(res.status).toBe(200);
     expect(res.body.progress).toMatchObject({
-      studentEmail: EMAIL, ageGroup: '8-12', points: 0, currentStreak: 0, digestsCompleted: 0,
+      studentEmail: EMAIL, ageGroup: '7-12', points: 0, currentStreak: 0, digestsCompleted: 0,
       badges: { excellence: false, weeklyStreak: false, growth: false }, digestCompletedToday: false,
     });
   });
@@ -70,7 +70,7 @@ describe('POST /current-affairs/progress/digest-complete', () => {
     expect(res.body).toMatchObject({ alreadyCompleted: false, pointsAwarded: 0, newBadges: [] });
     expect(res.body.progress).toMatchObject({ points: 0, currentStreak: 1, digestsCompleted: 1, digestCompletedToday: true });
     expect(supabase.rpc).toHaveBeenCalledWith('ca_apply_progress', expect.objectContaining({
-      p_student_email: EMAIL, p_age_group: '8-12', p_points: 0, p_digests: 1, p_current_streak: 1, p_last_digest_date: '2026-11-09',
+      p_student_email: EMAIL, p_age_group: '7-12', p_points: 0, p_digests: 1, p_current_streak: 1, p_last_digest_date: '2026-11-09',
     }));
   });
 
@@ -122,9 +122,9 @@ describe('POST /current-affairs/progress/digest-complete', () => {
 
   test('validation', async () => {
     expect((await post('digest-complete', { ageGroup: 'adult' })).status).toBe(400);
-    expect((await request(app).post('/current-affairs/progress/digest-complete').send({ ageGroup: '8-12' })).status).toBe(400);
+    expect((await request(app).post('/current-affairs/progress/digest-complete').send({ ageGroup: '7-12' })).status).toBe(400);
     const other = await request(app).post('/current-affairs/progress/digest-complete').set(auth('someone@else.in'))
-      .send({ studentEmail: EMAIL, ageGroup: '8-12' });
+      .send({ studentEmail: EMAIL, ageGroup: '7-12' });
     expect(other.status).toBe(403);
   });
 });
@@ -149,6 +149,23 @@ describe('POST /current-affairs/progress/story-read', () => {
     supabase.__seed('ca_stories', [story]);
     expect((await post('story-read', { storyId: story.id })).status).toBe(404);
     expect((await post('story-read', { storyId: 'nope' })).status).toBe(400);
+  });
+});
+
+describe('old age-group values', () => {
+  test('progress written with 8-12 or under-8 is saved and answered as 7-12', async () => {
+    const res = await post('digest-complete', { ageGroup: '8-12' });
+    expect(res.status).toBe(200);
+    expect(res.body.progress.ageGroup).toBe('7-12');
+    expect(supabase.__rows('ca_digest_views')[0].age_group).toBe('7-12');
+    expect(supabase.rpc).toHaveBeenCalledWith('ca_apply_progress', expect.objectContaining({ p_age_group: '7-12' }));
+    const under8 = await getProgress('?ageGroup=under-8');
+    expect(under8.body.progress).toMatchObject({ ageGroup: '7-12', digestsCompleted: 1 });
+  });
+
+  test('13+ progress is the 13-15 progress', async () => {
+    await post('digest-complete', { ageGroup: '13+' });
+    expect((await getProgress('?ageGroup=13-15')).body.progress).toMatchObject({ ageGroup: '13-15', digestsCompleted: 1 });
   });
 });
 

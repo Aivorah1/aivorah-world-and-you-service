@@ -47,7 +47,7 @@ function resolveWeek(requested, today) {
   return requested === current || requested === addDays(current, -7) ? requested : null;
 }
 
-// ── GET /current-affairs/quiz/week?ageGroup=8-12&studentEmail=&weekStart= ───
+// ── GET /current-affairs/quiz/week?ageGroup=7-12&studentEmail=&weekStart= ───
 // This week's 10 questions without answers. With studentEmail, also the
 // student's attempt if they already took it (attempt: null otherwise).
 router.get('/week', requireSelf((req) => req.query.studentEmail), handle(async (req, res) => {

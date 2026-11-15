@@ -14,7 +14,8 @@ router.use(requireEditor);
 
 const CATEGORIES = ['india', 'world', 'economy', 'science', 'environment', 'sports', 'society'];
 const STATUSES = ['draft', 'review', 'published', 'rejected', 'archived'];
-const AGES = ['young', 'kid', 'teen'];
+// Editors write the two versions: kid = 7-12, teen = 13-15 (no under-8 version).
+const AGES = ['kid', 'teen'];
 const STORY_TEXT = ['title', 'summary', 'what_happened', 'why_important'].flatMap((f) => AGES.map((a) => `${f}_${a}`));
 const STORY_OPTIONAL = ['did_you_know', 'new_word_1', 'def_1', 'new_word_2', 'def_2', 'new_word_3', 'def_3', 'think_about_it', 'image_url', 'source_url'];
 const QUESTION_TYPES = ['mcq', 'true_false', 'reasoning'];
@@ -177,8 +178,9 @@ router.get('/quiz/weeks', handle(async (req, res) => {
     .gte('week_start', since).order('week_start', { ascending: false }).limit(5000)) || [];
   const weeks = new Map();
   for (const r of rows) {
-    const key = `${r.week_start}|${r.age_group}`;
-    if (!weeks.has(key)) weeks.set(key, { weekStart: r.week_start, ageGroup: r.age_group, counts: {} });
+    const ageGroup = normalizeAgeGroup(r.age_group) || r.age_group;
+    const key = `${r.week_start}|${ageGroup}`;
+    if (!weeks.has(key)) weeks.set(key, { weekStart: r.week_start, ageGroup, counts: {} });
     const w = weeks.get(key);
     w.counts[r.status] = (w.counts[r.status] || 0) + 1;
   }

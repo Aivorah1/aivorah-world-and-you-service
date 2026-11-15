@@ -1,19 +1,23 @@
 // Age groups, categories, dates and the story shape the app receives.
 // Pure functions only — no database access — so they are easy to test.
 
+// Two content versions. Students under 8 read the 7-12 version. Each
+// ca_stories row has one text column set per version (_kid, _teen); the old
+// _young columns (the retired under-8 version) are no longer shown.
 const AGE_GROUPS = {
-  // Spec: 5-7 stories a day, about 5 minutes of reading.
-  'under-8': { column: 'young', storiesPerDay: 5, newWords: 1, wordsPerMinute: 90 },
-  '8-12':    { column: 'kid',   storiesPerDay: 6, newWords: 2, wordsPerMinute: 130 },
-  '13+':     { column: 'teen',  storiesPerDay: 7, newWords: 3, wordsPerMinute: 170 },
+  '7-12':  { column: 'kid',  storiesPerDay: 6, newWords: 2, wordsPerMinute: 130 },
+  '13-15': { column: 'teen', storiesPerDay: 7, newWords: 3, wordsPerMinute: 170 },
 };
+const AGE_GROUP_NAMES = Object.keys(AGE_GROUPS);
 
 const CATEGORIES = ['india', 'world', 'economy', 'science', 'environment', 'sports', 'society'];
 
+// Old app versions still send the three old values: under-8 and 8-12 → 7-12,
+// 13+ → 13-15. Answers only ever use the new values.
 const ALIASES = {
-  'under-8': 'under-8', under8: 'under-8', '3-8': 'under-8', young: 'under-8',
-  '8-12': '8-12', kid: '8-12',
-  '13+': '13+', '13': '13+', teen: '13+',
+  '7-12': '7-12', kid: '7-12',
+  'under-8': '7-12', under8: '7-12', '3-8': '7-12', young: '7-12', '8-12': '7-12',
+  '13-15': '13-15', teen: '13-15', '13+': '13-15', '13': '13-15',
 };
 
 // "13+" in a query string arrives as "13 " (a raw "+" decodes to a space), so trim first.
@@ -112,7 +116,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value) => UUID.test(String(value || ''));
 
 module.exports = {
-  AGE_GROUPS, CATEGORIES, normalizeAgeGroup,
+  AGE_GROUPS, AGE_GROUP_NAMES, CATEGORIES, normalizeAgeGroup,
   localDate, isDateString, addDays, daysBetween, quizWeekStart,
   toStory, readTimeSeconds, isUuid,
 };

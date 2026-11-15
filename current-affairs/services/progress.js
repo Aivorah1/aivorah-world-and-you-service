@@ -3,6 +3,7 @@
 // in one atomic statement with the ca_apply_progress() Postgres function.
 const supabase = require('../../services/supabase');
 const { check } = require('./db');
+const { normalizeAgeGroup } = require('./content');
 const { POINTS, EXCELLENCE_PERCENT, displayedStreak, digestRewards, quizRewards } = require('./rewards');
 
 async function getProgressRow(email, ageGroup) {
@@ -26,7 +27,7 @@ function toProgress(row, email, ageGroup, today) {
   const r = row || {};
   return {
     studentEmail: email,
-    ageGroup: r.age_group || ageGroup,
+    ageGroup: normalizeAgeGroup(r.age_group) || ageGroup,
     points: r.points || 0,
     currentStreak: displayedStreak(r.last_digest_date, r.current_streak, today),
     longestStreak: r.longest_streak || 0,
@@ -48,7 +49,7 @@ function toProgress(row, email, ageGroup, today) {
 
 async function getProgress(email, ageGroup, today) {
   const row = ageGroup ? await getProgressRow(email, ageGroup) : await latestProgressRow(email);
-  return toProgress(row, email, ageGroup || row?.age_group || '8-12', today);
+  return toProgress(row, email, ageGroup || normalizeAgeGroup(row?.age_group) || '7-12', today);
 }
 
 // Best-effort undo of a gate row when applying the points failed, so a retry can award them.

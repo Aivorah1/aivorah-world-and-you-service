@@ -24,11 +24,11 @@ function seedStories(count, overrides = {}) {
 }
 
 describe('GET /current-affairs/digest/today', () => {
-  test('8-12 gets 6 stories, highest priority first, in the kid version with 2 new words', async () => {
+  test('7-12 gets 6 stories, highest priority first, in the kid version with 2 new words', async () => {
     seedStories(12);
-    const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ date: '2026-11-09', isToday: true, ageGroup: '8-12', target: 6, completed: false });
+    expect(res.body).toMatchObject({ date: '2026-11-09', isToday: true, ageGroup: '7-12', target: 6, completed: false });
     expect(res.body.stories).toHaveLength(6);
     expect(res.body.stories[0].title).toBe('Kid title 12');
     expect(res.body.stories[0]).toMatchObject({
@@ -41,27 +41,55 @@ describe('GET /current-affairs/digest/today', () => {
     expect(res.body.stories[0].readTimeSeconds).toBeGreaterThanOrEqual(30);
   });
 
-  test('under-8 gets 5 young stories with 1 new word; 13+ gets 7 teen stories with 3 words', async () => {
+  test('13-15 gets 7 teen stories with 3 words', async () => {
     seedStories(20);
-    const young = await request(app).get('/current-affairs/digest/today?ageGroup=under-8');
-    expect(young.body.target).toBe(5);
-    expect(young.body.stories).toHaveLength(5);
-    expect(young.body.stories[0].title).toMatch(/^Young title/);
-    expect(young.body.stories[0].newWords).toHaveLength(1);
-
-    // An unencoded "+" arrives as a space — still understood as 13+.
-    const teen = await request(app).get('/current-affairs/digest/today?ageGroup=13+');
+    const teen = await request(app).get('/current-affairs/digest/today?ageGroup=13-15');
     expect(teen.status).toBe(200);
-    expect(teen.body.ageGroup).toBe('13+');
+    expect(teen.body).toMatchObject({ ageGroup: '13-15', target: 7 });
     expect(teen.body.stories).toHaveLength(7);
     expect(teen.body.stories[0].title).toMatch(/^Teen title/);
     expect(teen.body.stories[0].newWords).toHaveLength(3);
   });
 
+  describe('old age-group values from old app versions', () => {
+    test.each([
+      ['under-8', '7-12', /^Kid title/, 6],
+      ['8-12', '7-12', /^Kid title/, 6],
+      ['13%2B', '13-15', /^Teen title/, 7],
+      ['13+', '13-15', /^Teen title/, 7], // an unencoded "+" arrives as a space
+    ])('ageGroup=%s is read as %s', async (sent, expected, title, count) => {
+      seedStories(20);
+      const res = await request(app).get(`/current-affairs/digest/today?ageGroup=${sent}`);
+      expect(res.status).toBe(200);
+      expect(res.body.ageGroup).toBe(expected);
+      expect(res.body.stories).toHaveLength(count);
+      expect(res.body.stories[0].title).toMatch(title);
+    });
+
+    test('the retired under-8 (young) text is never shown', async () => {
+      seedStories(3);
+      const res = await request(app).get('/current-affairs/digest/today?ageGroup=under-8');
+      expect(JSON.stringify(res.body)).not.toMatch(/Young/);
+    });
+
+    test('a story asked for in an old age group comes back in the new version', async () => {
+      const [story] = seedStories(1);
+      const res = await request(app).get(`/current-affairs/story/${story.id}?ageGroup=under-8`);
+      expect(res.status).toBe(200);
+      expect(res.body.story.title).toMatch(/^Kid title/);
+    });
+
+    test('unknown values are still rejected, naming the new values', async () => {
+      const res = await request(app).get('/current-affairs/digest/today?ageGroup=adult');
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("ageGroup must be one of '7-12', '13-15'");
+    });
+  });
+
   test('per-age extras from the pipeline override the shared fields', async () => {
-    seedStories(1, { age_extras: { young: { didYouKnow: 'Young fact', newWords: [{ word: 'Moon', definition: 'It shines at night.' }] } } });
-    const res = await request(app).get('/current-affairs/digest/today?ageGroup=under-8');
-    expect(res.body.stories[0].didYouKnow).toBe('Young fact');
+    seedStories(1, { age_extras: { kid: { didYouKnow: 'Kid fact', newWords: [{ word: 'Moon', definition: 'It shines at night.' }] } } });
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
+    expect(res.body.stories[0].didYouKnow).toBe('Kid fact');
     expect(res.body.stories[0].newWords).toEqual([{ word: 'Moon', definition: 'It shines at night.' }]);
   });
 
@@ -70,20 +98,20 @@ describe('GET /current-affairs/digest/today', () => {
     seedStories(3, { status: 'review' });
     seedStories(1, { status: 'rejected' });
     seedStories(4, { publish_date: '2026-11-10' }); // tomorrow
-    const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(res.body.stories).toHaveLength(2);
   });
 
   test('falls back to the most recent digest when nothing is published today', async () => {
     seedStories(2, { publish_date: '2026-11-07' });
     seedStories(1, { publish_date: '2026-11-05' });
-    const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(res.body).toMatchObject({ date: '2026-11-07', isToday: false });
     expect(res.body.stories).toHaveLength(2);
   });
 
   test('returns an empty digest when nothing has ever been published', async () => {
-    const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ date: null, stories: [], readCount: 0 });
   });
@@ -91,16 +119,16 @@ describe('GET /current-affairs/digest/today', () => {
   test('"today" is the India calendar day, not UTC', async () => {
     freezeTime('2026-11-08T20:00:00Z'); // still Sunday in UTC, already 01:30 Monday in India
     seedStories(1, { publish_date: '2026-11-09' });
-    const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(res.body).toMatchObject({ date: '2026-11-09', isToday: true });
   });
 
   test('a past date can be requested; a future date cannot', async () => {
     seedStories(1, { publish_date: '2026-11-01' });
-    const past = await request(app).get('/current-affairs/digest/today?ageGroup=8-12&date=2026-11-01');
+    const past = await request(app).get('/current-affairs/digest/today?ageGroup=7-12&date=2026-11-01');
     expect(past.body).toMatchObject({ date: '2026-11-01', isToday: false });
     expect(past.body.stories).toHaveLength(1);
-    const future = await request(app).get('/current-affairs/digest/today?ageGroup=8-12&date=2026-11-20');
+    const future = await request(app).get('/current-affairs/digest/today?ageGroup=7-12&date=2026-11-20');
     expect(future.status).toBe(400);
   });
 
@@ -112,7 +140,7 @@ describe('GET /current-affairs/digest/today', () => {
     ]);
     supabase.__seed('ca_digest_views', [{ student_email: EMAIL, view_date: '2026-11-09' }]);
     const res = await request(app)
-      .get(`/current-affairs/digest/today?ageGroup=8-12&studentEmail=${encodeURIComponent('Kid@School.in')}`)
+      .get(`/current-affairs/digest/today?ageGroup=7-12&studentEmail=${encodeURIComponent('Kid@School.in')}`)
       .set(auth(EMAIL));
     expect(res.status).toBe(200);
     expect(res.body.readCount).toBe(2);
@@ -122,10 +150,10 @@ describe('GET /current-affairs/digest/today', () => {
 
   test("another student's read status needs their own sign-in", async () => {
     seedStories(1);
-    const noToken = await request(app).get(`/current-affairs/digest/today?ageGroup=8-12&studentEmail=${EMAIL}`);
+    const noToken = await request(app).get(`/current-affairs/digest/today?ageGroup=7-12&studentEmail=${EMAIL}`);
     expect(noToken.status).toBe(401);
     const wrong = await request(app)
-      .get(`/current-affairs/digest/today?ageGroup=8-12&studentEmail=${EMAIL}`)
+      .get(`/current-affairs/digest/today?ageGroup=7-12&studentEmail=${EMAIL}`)
       .set(auth('someone@else.in'));
     expect(wrong.status).toBe(403);
   });
@@ -148,7 +176,7 @@ describe('when the database is not set up', () => {
   test.each(['PGRST205', '42P01'])('a missing table (%s) answers 503 "not ready yet", not a generic 500', async (code) => {
     const error = jest.spyOn(console, 'error').mockImplementation(() => {});
     jest.spyOn(supabase, 'from').mockReturnValueOnce(failingQuery(code, "Could not find the table 'public.ca_stories'"));
-    const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(res.status).toBe(503);
     expect(res.body).toEqual({ error: 'Current Affairs is not ready yet. Please check back soon.', reason: 'database tables missing' });
     error.mockRestore();
@@ -157,7 +185,7 @@ describe('when the database is not set up', () => {
   test('other database errors stay a 500', async () => {
     const error = jest.spyOn(console, 'error').mockImplementation(() => {});
     jest.spyOn(supabase, 'from').mockReturnValueOnce(failingQuery('57014', 'statement timeout'));
-    const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(res.status).toBe(500);
     error.mockRestore();
   });

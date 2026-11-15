@@ -50,7 +50,7 @@ function questionRow(overrides = {}) {
   return {
     id: crypto.randomUUID(),
     week_start: '2026-11-08',
-    age_group: '8-12',
+    age_group: '7-12',
     category: 'india',
     question_type: type,
     question: 'Question?',

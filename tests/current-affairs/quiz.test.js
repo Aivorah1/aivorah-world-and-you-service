@@ -27,15 +27,15 @@ function answersFor(rows, correct) {
 }
 
 function submit(body, email = EMAIL) {
-  return request(app).post('/current-affairs/quiz/submit').set(auth(email)).send({ studentEmail: email, ageGroup: '8-12', ...body });
+  return request(app).post('/current-affairs/quiz/submit').set(auth(email)).send({ studentEmail: email, ageGroup: '7-12', ...body });
 }
 
 describe('GET /current-affairs/quiz/week', () => {
   test('returns 10 questions: 2 per category group, 6 MCQ / 2 true-false / 2 reasoning, no answers', async () => {
     supabase.__seed('ca_quiz_questions', weekQuestions());
-    const res = await request(app).get('/current-affairs/quiz/week?ageGroup=8-12');
+    const res = await request(app).get('/current-affairs/quiz/week?ageGroup=7-12');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ weekStart: '2026-11-08', ageGroup: '8-12', total: 10, attempt: null });
+    expect(res.body).toMatchObject({ weekStart: '2026-11-08', ageGroup: '7-12', total: 10, attempt: null });
     const qs = res.body.questions;
     expect(qs).toHaveLength(10);
     expect(countBy(qs, (q) => SLOT[q.category])).toEqual({ india: 2, world: 2, science: 2, 'econ-env': 2, 'sports-society': 2 });
@@ -51,36 +51,44 @@ describe('GET /current-affairs/quiz/week', () => {
   test("only this week's published questions for the age group", async () => {
     supabase.__seed('ca_quiz_questions', [
       ...weekQuestions(),
-      ...weekQuestions({ age_group: '13+' }),
+      ...weekQuestions({ age_group: '13-15' }),
       ...weekQuestions({ week_start: '2026-11-01' }),
       questionRow({ status: 'review', category: 'india' }),
     ]);
-    const res = await request(app).get('/current-affairs/quiz/week?ageGroup=8-12');
+    const res = await request(app).get('/current-affairs/quiz/week?ageGroup=7-12');
     expect(res.body.questions).toHaveLength(10);
     const ids = new Set(supabase.__rows('ca_quiz_questions')
-      .filter((q) => q.age_group === '8-12' && q.week_start === '2026-11-08' && q.status === 'published').map((q) => q.id));
+      .filter((q) => q.age_group === '7-12' && q.week_start === '2026-11-08' && q.status === 'published').map((q) => q.id));
     expect(res.body.questions.every((q) => ids.has(q.id))).toBe(true);
   });
 
   test('returns an empty quiz when none is published yet', async () => {
-    const res = await request(app).get('/current-affairs/quiz/week?ageGroup=under-8');
+    const res = await request(app).get('/current-affairs/quiz/week?ageGroup=13-15');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ total: 0, questions: [] });
+  });
+
+  test('old values: 8-12 and under-8 get the 7-12 quiz, 13+ the 13-15 quiz', async () => {
+    supabase.__seed('ca_quiz_questions', [...weekQuestions(), ...weekQuestions({ age_group: '13-15' })]);
+    for (const [sent, expected] of [['8-12', '7-12'], ['under-8', '7-12'], ['13%2B', '13-15']]) {
+      const res = await request(app).get(`/current-affairs/quiz/week?ageGroup=${sent}`);
+      expect(res.body).toMatchObject({ ageGroup: expected, total: 10 });
+    }
   });
 
   test("with studentEmail, includes the student's attempt once they have taken it", async () => {
     const rows = weekQuestions();
     supabase.__seed('ca_quiz_questions', rows);
     await submit({ answers: answersFor(rows, 6) });
-    const res = await request(app).get(`/current-affairs/quiz/week?ageGroup=8-12&studentEmail=${EMAIL}`).set(auth(EMAIL));
+    const res = await request(app).get(`/current-affairs/quiz/week?ageGroup=7-12&studentEmail=${EMAIL}`).set(auth(EMAIL));
     expect(res.body.attempt).toMatchObject({ score: 6, total: 10, percentage: 60 });
     expect(res.body.attempt.results).toHaveLength(10);
   });
 
   test("a weekStart older than last week is rejected", async () => {
-    expect((await request(app).get('/current-affairs/quiz/week?ageGroup=8-12&weekStart=2026-11-01')).status).toBe(200);
-    expect((await request(app).get('/current-affairs/quiz/week?ageGroup=8-12&weekStart=2026-10-25')).status).toBe(400);
-    expect((await request(app).get('/current-affairs/quiz/week?ageGroup=8-12&weekStart=nope')).status).toBe(400);
+    expect((await request(app).get('/current-affairs/quiz/week?ageGroup=7-12&weekStart=2026-11-01')).status).toBe(200);
+    expect((await request(app).get('/current-affairs/quiz/week?ageGroup=7-12&weekStart=2026-10-25')).status).toBe(400);
+    expect((await request(app).get('/current-affairs/quiz/week?ageGroup=7-12&weekStart=nope')).status).toBe(400);
   });
 });
 
@@ -155,7 +163,7 @@ describe('POST /current-affairs/quiz/submit', () => {
     expect(res.body.results[9]).toMatchObject({ correct: false, correctIndex: rows[9].correct_index, explanation: 'Because.' });
 
     const [stored] = supabase.__rows('ca_quiz_attempts');
-    expect(stored).toMatchObject({ student_email: EMAIL, age_group: '8-12', week_start: '2026-11-08', score: 8, percentage: 80 });
+    expect(stored).toMatchObject({ student_email: EMAIL, age_group: '7-12', week_start: '2026-11-08', score: 8, percentage: 80 });
     expect(stored.answers).toHaveLength(10);
   });
 
@@ -185,9 +193,9 @@ describe('POST /current-affairs/quiz/submit', () => {
   test('validation, missing quiz and sign-in checks', async () => {
     expect((await submit({ answers: 'x' })).status).toBe(400);
     expect((await submit({ answers: [] })).status).toBe(404); // no quiz this week
-    expect((await request(app).post('/current-affairs/quiz/submit').send({ ageGroup: '8-12', answers: [] })).status).toBe(400);
+    expect((await request(app).post('/current-affairs/quiz/submit').send({ ageGroup: '7-12', answers: [] })).status).toBe(400);
     const other = await request(app).post('/current-affairs/quiz/submit').set(auth('someone@else.in'))
-      .send({ studentEmail: EMAIL, ageGroup: '8-12', answers: [] });
+      .send({ studentEmail: EMAIL, ageGroup: '7-12', answers: [] });
     expect(other.status).toBe(403);
   });
 });

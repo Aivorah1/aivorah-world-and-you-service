@@ -15,8 +15,8 @@ async function latestDigestDate(today) {
   return rows?.[0]?.publish_date || null;
 }
 
-// ── GET /current-affairs/digest/today?ageGroup=8-12&studentEmail=&date= ─────
-// Today's stories for the age group (5 / 6 / 7). If nothing is published for
+// ── GET /current-affairs/digest/today?ageGroup=7-12&studentEmail=&date= ─────
+// Today's stories for the age group (6 for 7-12, 7 for 13-15). If nothing is published for
 // today yet, the most recent digest is returned instead (isToday: false).
 // With studentEmail, each story says whether that student has read it.
 router.get('/today', requireSelf((req) => req.query.studentEmail), handle(async (req, res) => {

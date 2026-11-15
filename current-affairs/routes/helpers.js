@@ -1,4 +1,4 @@
-const { normalizeAgeGroup } = require('../services/content');
+const { normalizeAgeGroup, AGE_GROUP_NAMES } = require('../services/content');
 const { normalizeEmail } = require('../middleware/auth');
 const { isNotSetUp } = require('../services/db');
 
@@ -11,7 +11,7 @@ function isEmail(value) {
 function readStudent(res, source, { emailRequired, ageGroupRequired = true }) {
   const ageGroup = normalizeAgeGroup(source.ageGroup);
   if (ageGroupRequired && !ageGroup) {
-    res.status(400).json({ error: "ageGroup must be one of 'under-8', '8-12', '13+'" });
+    res.status(400).json({ error: `ageGroup must be one of ${AGE_GROUP_NAMES.map((a) => `'${a}'`).join(', ')}` });
     return null;
   }
   const email = normalizeEmail(source.studentEmail);

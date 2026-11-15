@@ -52,13 +52,13 @@ describe('stories', () => {
     expect(edited.body.story).toMatchObject({ title_kid: 'Fixed title', did_you_know: 'Checked fact.' });
     expect((await send('patch', `/stories/${row.id}`, { title_kid: '  ' })).status).toBe(400);
 
-    const before = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    const before = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(before.body.stories || []).toHaveLength(0);
 
     const pub = await send('post', `/stories/${row.id}/status`, { status: 'published' });
     expect(pub.body.story).toMatchObject({ status: 'published', is_true_fact: true, reviewed_by: EDITOR });
 
-    const after = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    const after = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(after.body.stories.map((s) => s.title)).toEqual(['Fixed title']);
   });
 
@@ -70,9 +70,9 @@ describe('stories', () => {
     expect((await send('post', '/stories/00000000-0000-4000-8000-000000000000/status', { status: 'published' })).status).toBe(404);
   });
 
-  test('an editor writes a new story: all three age versions are required', async () => {
+  test('an editor writes a new story: the two age versions (7-12, 13-15) are required', async () => {
     const full = { category: 'science', source: 'NASA', source_url: 'https://www.nasa.gov/x' };
-    for (const f of ['title', 'summary', 'what_happened', 'why_important']) for (const a of ['young', 'kid', 'teen']) full[`${f}_${a}`] = `${f} ${a}`;
+    for (const f of ['title', 'summary', 'what_happened', 'why_important']) for (const a of ['kid', 'teen']) full[`${f}_${a}`] = `${f} ${a}`;
 
     const missing = await send('post', '/stories', { ...full, why_important_teen: undefined });
     expect(missing.status).toBe(400);
@@ -81,6 +81,7 @@ describe('stories', () => {
     const draft = await send('post', '/stories', full);
     expect(draft.status).toBe(201);
     expect(draft.body.story).toMatchObject({ status: 'draft', publish_date: '2026-11-09', category: 'science' });
+    expect(draft.body.story).not.toHaveProperty('title_young'); // no under-8 version any more
 
     const live = await send('post', '/stories', { ...full, publish: true });
     expect(live.body.story).toMatchObject({ status: 'published', reviewed_by: EDITOR, is_true_fact: true });
@@ -90,12 +91,12 @@ describe('stories', () => {
 describe('quiz', () => {
   test("lists this week's questions with answers, in order", async () => {
     supabase.__seed('ca_quiz_questions', weekQuestions({ status: 'review' }));
-    const res = await get('/quiz?ageGroup=8-12');
+    const res = await get('/quiz?ageGroup=7-12');
     expect(res.status).toBe(200);
     expect(res.body.weekStart).toBe('2026-11-08');
     expect(res.body.questions.map((q) => q.question)).toEqual(['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10']);
     expect(res.body.questions[0]).toHaveProperty('correct_index', 1);
-    expect((await get('/quiz?ageGroup=8-12&weekStart=2026-11-09')).status).toBe(400); // not a Sunday
+    expect((await get('/quiz?ageGroup=7-12&weekStart=2026-11-09')).status).toBe(400); // not a Sunday
   });
 
   test('editing keeps the answer pointing at an option', async () => {
@@ -112,25 +113,34 @@ describe('quiz', () => {
     const qs = weekQuestions({ status: 'review' });
     qs[9].status = 'rejected';
     supabase.__seed('ca_quiz_questions', qs);
-    const before = await request(app).get('/current-affairs/quiz/week?ageGroup=8-12');
+    const before = await request(app).get('/current-affairs/quiz/week?ageGroup=7-12');
     expect(before.body.questions || []).toHaveLength(0);
 
-    const pub = await send('post', '/quiz/publish', { weekStart: '2026-11-08', ageGroup: '8-12' });
+    const pub = await send('post', '/quiz/publish', { weekStart: '2026-11-08', ageGroup: '7-12' });
     expect(pub.body).toEqual({ published: 9 });
-    const after = await request(app).get('/current-affairs/quiz/week?ageGroup=8-12');
+    const after = await request(app).get('/current-affairs/quiz/week?ageGroup=7-12');
     expect(after.body.questions).toHaveLength(9);
     expect(after.body.questions[0]).not.toHaveProperty('correct_index');
   });
 
+  test('a question sent with an old age group (8-12) is saved as 7-12', async () => {
+    const old = await send('post', '/quiz', {
+      week_start: '2026-11-08', age_group: '8-12', category: 'india', question_type: 'true_false',
+      question: 'Delhi is the capital.', options: ['True', 'False'], correct_index: 0, explanation: 'It is.',
+    });
+    expect(old.status).toBe(201);
+    expect(old.body.question.age_group).toBe('7-12');
+  });
+
   test('an editor can add a question and see the week in the list', async () => {
     const res = await send('post', '/quiz', {
-      week_start: '2026-11-08', age_group: '13+', category: 'world', question_type: 'true_false',
+      week_start: '2026-11-08', age_group: '13-15', category: 'world', question_type: 'true_false',
       question: 'The Pacific is the largest ocean.', options: ['True', 'False'], correct_index: 0, explanation: 'It is.',
     });
     expect(res.status).toBe(201);
-    expect(res.body.question).toMatchObject({ status: 'review', age_group: '13+' });
+    expect(res.body.question).toMatchObject({ status: 'review', age_group: '13-15' });
     const weeks = await get('/quiz/weeks');
-    expect(weeks.body.weeks).toEqual([{ weekStart: '2026-11-08', ageGroup: '13+', counts: { review: 1 } }]);
+    expect(weeks.body.weeks).toEqual([{ weekStart: '2026-11-08', ageGroup: '13-15', counts: { review: 1 } }]);
   });
 });
 
@@ -140,19 +150,19 @@ describe('analytics', () => {
     supabase.__seed('ca_stories', [s1]);
     supabase.__seed('ca_story_reads', [
       // a: reads on 2 days, finishes the digest on 1; b: reads on 1 day
-      { student_email: 'a@x.in', story_id: s1.id, age_group: '8-12', read_date: '2026-11-08', duration_seconds: 60 },
-      { student_email: 'a@x.in', story_id: 's2', age_group: '8-12', read_date: '2026-11-08', duration_seconds: 120 },
-      { student_email: 'a@x.in', story_id: 's3', age_group: '8-12', read_date: '2026-11-09', duration_seconds: null },
-      { student_email: 'b@x.in', story_id: s1.id, age_group: '8-12', read_date: '2026-11-09', duration_seconds: 90 },
+      { student_email: 'a@x.in', story_id: s1.id, age_group: '7-12', read_date: '2026-11-08', duration_seconds: 60 },
+      { student_email: 'a@x.in', story_id: 's2', age_group: '7-12', read_date: '2026-11-08', duration_seconds: 120 },
+      { student_email: 'a@x.in', story_id: 's3', age_group: '7-12', read_date: '2026-11-09', duration_seconds: null },
+      { student_email: 'b@x.in', story_id: s1.id, age_group: '7-12', read_date: '2026-11-09', duration_seconds: 90 },
       // c only in the earlier month: counts for retention, not for this range
-      { student_email: 'c@x.in', story_id: s1.id, age_group: '8-12', read_date: '2026-09-20', duration_seconds: 30 },
-      { student_email: 'a@x.in', story_id: 's4', age_group: '8-12', read_date: '2026-09-25', duration_seconds: 30 },
+      { student_email: 'c@x.in', story_id: s1.id, age_group: '7-12', read_date: '2026-09-20', duration_seconds: 30 },
+      { student_email: 'a@x.in', story_id: 's4', age_group: '7-12', read_date: '2026-09-25', duration_seconds: 30 },
     ]);
-    supabase.__seed('ca_digest_views', [{ student_email: 'a@x.in', age_group: '8-12', view_date: '2026-11-08', story_count: 2 }]);
-    supabase.__seed('ca_quiz_attempts', [{ student_email: 'a@x.in', age_group: '8-12', week_start: '2026-11-08', percentage: 80 }]);
+    supabase.__seed('ca_digest_views', [{ student_email: 'a@x.in', age_group: '7-12', view_date: '2026-11-08', story_count: 2 }]);
+    supabase.__seed('ca_quiz_attempts', [{ student_email: 'a@x.in', age_group: '7-12', week_start: '2026-11-08', percentage: 80 }]);
     supabase.__seed('ca_progress', [
-      { student_email: 'a@x.in', age_group: '8-12', current_streak: 2, updated_at: '2026-11-09T05:00:00Z' },
-      { student_email: 'b@x.in', age_group: '8-12', current_streak: 1, updated_at: '2026-11-09T05:00:00Z' },
+      { student_email: 'a@x.in', age_group: '7-12', current_streak: 2, updated_at: '2026-11-09T05:00:00Z' },
+      { student_email: 'b@x.in', age_group: '7-12', current_streak: 1, updated_at: '2026-11-09T05:00:00Z' },
     ]);
 
     const res = await get('/analytics?from=2026-11-08&to=2026-11-09');

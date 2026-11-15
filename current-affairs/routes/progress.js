@@ -8,7 +8,7 @@ const { readStudent, handle } = require('./helpers');
 
 const router = express.Router();
 
-// ── GET /current-affairs/progress/:studentEmail?ageGroup=8-12 ───────────────
+// ── GET /current-affairs/progress/:studentEmail?ageGroup=7-12 ───────────────
 // Points, streaks, counts and badges. Without ageGroup: the student's most
 // recently active age group. A student with no activity gets zeros.
 router.get('/:studentEmail', requireSelf((req) => req.params.studentEmail), handle(async (req, res) => {
