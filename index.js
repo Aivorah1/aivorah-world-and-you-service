@@ -11,6 +11,13 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'aivorah-wor
 app.use('/daily-tidbit', require('./routes/daily-tidbit'));
 app.use('/world',        require('./routes/world'));
 
+// Current Affairs (daily news digest + weekly quiz, the "Current Affairs" tab
+// of The World & You). This service is its source of truth; the attendance
+// service only forwards old app versions' /current-affairs calls here.
+// The digest is public; per-student routes check the Firebase ID token
+// themselves (current-affairs/middleware/auth.js).
+app.use('/current-affairs', require('./current-affairs/routes'));
+
 const PORT = process.env.PORT || 3010;
 if (require.main === module) {
   app.listen(PORT, () => {

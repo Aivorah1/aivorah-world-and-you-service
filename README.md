@@ -38,6 +38,36 @@ Runs on `PORT` (default `3010`).
 - `GET /world/daily?grade=` — On This Day (3 real events from Wikipedia's feed, child-safe filter), Fun Challenge (AI; a ready-made puzzle with `partial: true` if the AI is slow). Every grade is prepared at start-up and when the date changes (`PREWARM=off` disables)
 - `GET /health`
 
+## Current Affairs (`/current-affairs`)
+
+The daily news digest and the weekly quiz shown in the app's
+The World & You → Current Affairs tab. **This service is the source of truth**
+(moved here from aivorah-attendance-service, which now only forwards old app
+versions' `/current-affairs` calls to this service).
+
+```
+current-affairs/
+  routes/       digest, story, quiz, progress, admin (content tool)
+  services/     content (age groups, stories), quiz, progress, rewards, analytics
+  middleware/   auth.js (student = token email), adminAuth.js (editor allowlist)
+services/firebaseAdmin.js   — verifies Firebase ID tokens
+tests/current-affairs/      — supertest + an in-memory Supabase fake
+```
+
+- Tables `ca_*` and the `ca_apply_progress()` function: aivorah-db migrations
+  (`0023_current_affairs.sql` and later).
+- Stories and quiz questions are written by the pipeline in
+  aivorah-current-affairs-service (GitHub Actions) and the admin content tool.
+- Environment: see the Current Affairs block in `.env.example`
+  (`FIREBASE_SERVICE_ACCOUNT_B64`, `AUTH_ENFORCE` — never `monitor` in production).
+
+Endpoints: `GET /current-affairs/digest/today`, `GET /current-affairs/digest/list`,
+`GET /current-affairs/story/:id`, `GET /current-affairs/quiz/week`,
+`POST /current-affairs/quiz/check`, `POST /current-affairs/quiz/submit`,
+`GET /current-affairs/progress/:studentEmail`,
+`POST /current-affairs/progress/{digest-complete,story-read,quiz-complete}`,
+`/current-affairs/admin/*` (editors only).
+
 ## Known gaps (carried over from the monolith, not introduced here)
 
 - `POST /daily-tidbit/quiz-complete` has no server-side "already awarded
