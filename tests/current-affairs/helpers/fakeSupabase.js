@@ -106,7 +106,8 @@ function createFakeSupabase() {
       };
       rows.push(row);
     }
-    row.points += p.p_points || 0;
+    // Like the SQL function (aivorah-db 0026): points only come with a quiz.
+    if ((p.p_quizzes || 0) > 0) row.points += Math.max(p.p_points || 0, 0);
     row.digests_completed += p.p_digests || 0;
     row.stories_read += p.p_stories || 0;
     row.quizzes_completed += p.p_quizzes || 0;

@@ -1,9 +1,13 @@
-// Points, streaks and badges (PRD §5). Pure functions — the database write
-// itself is the atomic ca_apply_progress() function (aivorah-db migrations).
+// Points, streaks and badges. Pure functions — the database write itself is
+// the atomic ca_apply_progress() function (aivorah-db migrations).
+//
+// Points come ONLY from the weekly quiz: +20 for completing it, +10 more at
+// 80% or above. Reading the digest or a story earns no points; the digest
+// still builds the daily streak and the 7-day streak badge.
 
 const { daysBetween } = require('./content');
 
-const POINTS = { digest: 10, story: 5, quiz: 20, excellenceBonus: 10 };
+const POINTS = { digest: 0, story: 0, quiz: 20, excellenceBonus: 10 };
 const EXCELLENCE_PERCENT = 80;
 const WEEKLY_STREAK_DAYS = 7;
 

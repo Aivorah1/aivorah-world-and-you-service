@@ -19,7 +19,8 @@ router.get('/:studentEmail', requireSelf((req) => req.params.studentEmail), hand
 }));
 
 // ── POST /current-affairs/progress/digest-complete { studentEmail, ageGroup, storyCount? } ──
-// +10 points once per day; extends the daily streak (weekly streak badge at 7 days).
+// Records the day's digest once per day (no points) and extends the daily
+// streak; the weekly streak badge comes at 7 days. Old app versions still call it.
 router.post('/digest-complete', requireSelf((req) => req.body?.studentEmail), handle(async (req, res) => {
   const body = req.body || {};
   const student = readStudent(res, body, { emailRequired: true });
@@ -29,7 +30,8 @@ router.post('/digest-complete', requireSelf((req) => req.body?.studentEmail), ha
 }));
 
 // ── POST /current-affairs/progress/story-read { studentEmail, ageGroup, storyId, durationSeconds? } ──
-// +5 points the first time a student reads a story.
+// Records the first read of a story (reading time for analytics). No points;
+// kept so old app versions that call it still get a normal answer.
 router.post('/story-read', requireSelf((req) => req.body?.studentEmail), handle(async (req, res) => {
   const body = req.body || {};
   const student = readStudent(res, body, { emailRequired: true });

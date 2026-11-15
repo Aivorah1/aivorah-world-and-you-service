@@ -7,7 +7,7 @@ jest.mock('../../services/world', () => ({}));
 const request = require('supertest');
 const app = require('../../index');
 const supabase = require('../../services/supabase');
-const { nextStreak, displayedStreak, quizRewards } = require('../../current-affairs/services/rewards');
+const { nextStreak, displayedStreak, quizRewards, digestRewards, POINTS } = require('../../current-affairs/services/rewards');
 const { freezeTime, storyRow, auth } = require('./helpers/fixtures');
 
 const EMAIL = 'kid@school.in';
@@ -64,13 +64,13 @@ describe('GET /current-affairs/progress/:studentEmail', () => {
 });
 
 describe('POST /current-affairs/progress/digest-complete', () => {
-  test('+10 points and a 1-day streak, applied with the atomic Postgres function', async () => {
+  test('no points, but a 1-day streak, applied with the atomic Postgres function', async () => {
     const res = await post('digest-complete', { storyCount: 10 });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ alreadyCompleted: false, pointsAwarded: 10, newBadges: [] });
-    expect(res.body.progress).toMatchObject({ points: 10, currentStreak: 1, digestsCompleted: 1, digestCompletedToday: true });
+    expect(res.body).toMatchObject({ alreadyCompleted: false, pointsAwarded: 0, newBadges: [] });
+    expect(res.body.progress).toMatchObject({ points: 0, currentStreak: 1, digestsCompleted: 1, digestCompletedToday: true });
     expect(supabase.rpc).toHaveBeenCalledWith('ca_apply_progress', expect.objectContaining({
-      p_student_email: EMAIL, p_age_group: '8-12', p_points: 10, p_digests: 1, p_current_streak: 1, p_last_digest_date: '2026-11-09',
+      p_student_email: EMAIL, p_age_group: '8-12', p_points: 0, p_digests: 1, p_current_streak: 1, p_last_digest_date: '2026-11-09',
     }));
   });
 
@@ -78,11 +78,11 @@ describe('POST /current-affairs/progress/digest-complete', () => {
     await post('digest-complete');
     const again = await post('digest-complete');
     expect(again.body).toMatchObject({ alreadyCompleted: true, pointsAwarded: 0 });
-    expect(again.body.progress.points).toBe(10);
+    expect(again.body.progress.digestsCompleted).toBe(1);
     expect(supabase.rpc).toHaveBeenCalledTimes(1);
   });
 
-  test('consecutive days grow the streak; day 7 earns the weekly streak badge', async () => {
+  test('consecutive days grow the streak; day 7 earns the weekly streak badge, with no points', async () => {
     const days = ['2026-11-09', '2026-11-10', '2026-11-11', '2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15'];
     let res;
     for (const day of days) {
@@ -90,7 +90,8 @@ describe('POST /current-affairs/progress/digest-complete', () => {
       res = await post('digest-complete');
     }
     expect(res.body.newBadges).toEqual(['weekly_streak']);
-    expect(res.body.progress).toMatchObject({ points: 70, currentStreak: 7, longestStreak: 7, badges: { weeklyStreak: true } });
+    expect(res.body.pointsAwarded).toBe(0);
+    expect(res.body.progress).toMatchObject({ points: 0, currentStreak: 7, longestStreak: 7, badges: { weeklyStreak: true } });
 
     onDay('2026-11-16');
     const day8 = await post('digest-complete');
@@ -104,17 +105,18 @@ describe('POST /current-affairs/progress/digest-complete', () => {
     onDay('2026-11-13');
     expect((await getProgress()).body.progress.currentStreak).toBe(0);
     const res = await post('digest-complete');
-    expect(res.body.progress).toMatchObject({ currentStreak: 1, longestStreak: 2, points: 30 });
+    expect(res.body.progress).toMatchObject({ currentStreak: 1, longestStreak: 2, points: 0 });
   });
 
-  test('if the points cannot be saved, the day is not marked done so a retry still awards them', async () => {
+  test('if the progress cannot be saved, the day is not marked done so a retry still counts it', async () => {
     const error = jest.spyOn(console, 'error').mockImplementation(() => {});
     supabase.rpc.mockResolvedValueOnce({ data: null, error: { message: 'db down' } });
     const failed = await post('digest-complete');
     expect(failed.status).toBe(500);
     expect(supabase.__rows('ca_digest_views')).toHaveLength(0);
     const retry = await post('digest-complete');
-    expect(retry.body).toMatchObject({ alreadyCompleted: false, pointsAwarded: 10 });
+    expect(retry.body).toMatchObject({ alreadyCompleted: false, pointsAwarded: 0 });
+    expect(retry.body.progress.currentStreak).toBe(1);
     error.mockRestore();
   });
 
@@ -128,24 +130,49 @@ describe('POST /current-affairs/progress/digest-complete', () => {
 });
 
 describe('POST /current-affairs/progress/story-read', () => {
-  test('+5 points the first time a story is read, never twice', async () => {
+  test('a read is recorded once and gives no points', async () => {
     const story = storyRow();
     supabase.__seed('ca_stories', [story]);
     const first = await post('story-read', { storyId: story.id, durationSeconds: 52 });
-    expect(first.body).toMatchObject({ alreadyRead: false, pointsAwarded: 5 });
-    expect(first.body.progress).toMatchObject({ points: 5, storiesRead: 1 });
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ alreadyRead: false, pointsAwarded: 0 });
+    expect(first.body.progress).toMatchObject({ points: 0, storiesRead: 1 });
     expect(supabase.__rows('ca_story_reads')[0]).toMatchObject({ story_id: story.id, duration_seconds: 52, read_date: '2026-11-09' });
 
     const second = await post('story-read', { storyId: story.id });
     expect(second.body).toMatchObject({ alreadyRead: true, pointsAwarded: 0 });
-    expect(second.body.progress.points).toBe(5);
+    expect(second.body.progress).toMatchObject({ points: 0, storiesRead: 1 });
   });
 
-  test('unpublished or unknown stories earn nothing', async () => {
+  test('unpublished or unknown stories are not recorded', async () => {
     const story = storyRow({ status: 'review' });
     supabase.__seed('ca_stories', [story]);
     expect((await post('story-read', { storyId: story.id })).status).toBe(404);
     expect((await post('story-read', { storyId: 'nope' })).status).toBe(400);
+  });
+});
+
+describe('only the weekly quiz gives points', () => {
+  test('reading the digest and a story adds nothing to points earned in the quiz', async () => {
+    seedAttempt(70);
+    expect((await post('quiz-complete')).body.pointsAwarded).toBe(20);
+    const story = storyRow();
+    supabase.__seed('ca_stories', [story]);
+    const read = await post('story-read', { storyId: story.id });
+    const digest = await post('digest-complete');
+    expect(read.body.pointsAwarded).toBe(0);
+    expect(digest.body.pointsAwarded).toBe(0);
+    expect(digest.body.progress).toMatchObject({ points: 20, storiesRead: 1, digestsCompleted: 1, quizzesCompleted: 1 });
+  });
+
+  test('old app versions calling the reading endpoints get a normal answer', async () => {
+    const story = storyRow();
+    supabase.__seed('ca_stories', [story]);
+    const read = await post('story-read', { storyId: story.id, durationSeconds: 30 });
+    const digest = await post('digest-complete', { storyCount: 6 });
+    expect([read.status, digest.status]).toEqual([200, 200]);
+    expect(read.body).toEqual(expect.objectContaining({ alreadyRead: false, pointsAwarded: 0, progress: expect.any(Object) }));
+    expect(digest.body).toEqual(expect.objectContaining({ alreadyCompleted: false, pointsAwarded: 0, newBadges: [], progress: expect.any(Object) }));
   });
 });
 
@@ -209,6 +236,14 @@ describe('reward rules', () => {
     expect(nextStreak('2026-10-31', 9, '2026-11-01')).toBe(10); // across a month end
     expect(displayedStreak('2026-11-08', 4, '2026-11-09')).toBe(4);
     expect(displayedStreak('2026-11-07', 4, '2026-11-09')).toBe(0);
+  });
+
+  test('digestRewards: no points; the 7-day badge does not depend on points', () => {
+    expect(POINTS).toMatchObject({ digest: 0, story: 0, quiz: 20, excellenceBonus: 10 });
+    expect(digestRewards(null, '2026-11-09')).toEqual({ points: 0, streak: 1, weeklyStreak: false, newBadges: [] });
+    expect(digestRewards({ last_digest_date: '2026-11-08', current_streak: 6, points: 0 }, '2026-11-09'))
+      .toEqual({ points: 0, streak: 7, weeklyStreak: true, newBadges: ['weekly_streak'] });
+    expect(digestRewards({ last_digest_date: '2026-11-08', current_streak: 6, badge_weekly_streak: true }, '2026-11-09').newBadges).toEqual([]);
   });
 
   test('quizRewards', () => {
