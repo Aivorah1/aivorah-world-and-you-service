@@ -7,18 +7,12 @@ const { readStudent, handle } = require('./helpers');
 
 const router = express.Router();
 
-// The latest day on or before `today` that has published stories.
-async function latestDigestDate(today) {
-  const rows = check(await supabase.from('ca_stories').select('publish_date')
-    .eq('status', 'published').lte('publish_date', today)
-    .order('publish_date', { ascending: false }).limit(1));
-  return rows?.[0]?.publish_date || null;
-}
-
-// ── GET /current-affairs/digest/today?ageGroup=7-12&studentEmail=&date= ─────
-// Today's stories for the age group (6 for 7-12, 7 for 13-15). If nothing is published for
-// today yet, the most recent digest is returned instead (isToday: false).
+// ── GET /current-affairs/digest/today?ageGroup=7-12&studentEmail=&date= ───────
+// Today's published stories for the age group (6 for 7-12, 7 for 13-15).
+// If nothing is published for TODAY yet, the digest is blank (empty stories array).
+// Admin publishes stories first; students only see what is published for today.
 // With studentEmail, each story says whether that student has read it.
+// The optional ?date= query still lets the app view any specific past day.
 router.get('/today', requireSelf((req) => req.query.studentEmail), handle(async (req, res) => {
   const student = readStudent(res, req.query, { emailRequired: false });
   if (!student) return;
@@ -29,7 +23,7 @@ router.get('/today', requireSelf((req) => req.query.studentEmail), handle(async 
   if (date !== undefined) {
     if (!isDateString(date) || date > today) return res.status(400).json({ error: 'date must be YYYY-MM-DD, not in the future' });
   } else {
-    date = await latestDigestDate(today);
+    date = today;
   }
 
   const target = AGE_GROUPS[ageGroup].storiesPerDay;
@@ -65,7 +59,7 @@ router.get('/today', requireSelf((req) => req.query.studentEmail), handle(async 
   });
 }));
 
-// ── GET /current-affairs/digest/list?limit=30 ───────────────────────────────
+// ── GET /current-affairs/digest/list?limit=30 ─────────────────────────────────
 // Past digest dates (newest first) with how many stories each has.
 router.get('/list', handle(async (req, res) => {
   const limit = Math.min(90, Math.max(1, parseInt(req.query.limit, 10) || 30));
