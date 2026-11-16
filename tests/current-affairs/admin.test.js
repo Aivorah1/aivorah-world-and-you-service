@@ -88,6 +88,130 @@ describe('stories', () => {
   });
 });
 
+describe('story checks (warnings, image, source link)', () => {
+  const words = (n) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+  const full = () => {
+    const f = { category: 'science', source: 'NASA', source_url: 'https://www.nasa.gov/x?utm_source=feed' };
+    for (const p of ['title', 'summary', 'why_important']) for (const a of ['kid', 'teen']) f[`${p}_${a}`] = `${p} ${a}`;
+    f.what_happened_kid = words(65);
+    f.what_happened_teen = words(120);
+    return f;
+  };
+
+  test('lengths inside the targets give no warnings; outside give one per text, and still save', async () => {
+    const ok = await send('post', '/stories', full());
+    expect(ok.status).toBe(201);
+    expect(ok.body.warnings).toEqual([]);
+    const short = await send('post', '/stories', { ...full(), source_url: 'https://www.nasa.gov/y', what_happened_kid: words(20), what_happened_teen: words(200) });
+    expect(short.status).toBe(201);
+    expect(short.body.warnings).toEqual([
+      { field: 'what_happened_kid', words: 20, message: 'Ages 7-12 "What happened" has 20 words; aim for 50-80.' },
+      { field: 'what_happened_teen', words: 200, message: 'Ages 13-15 "What happened" has 200 words; aim for 100-150.' },
+    ]);
+    const edited = await send('patch', `/stories/${short.body.story.id}`, { what_happened_kid: words(60) });
+    expect(edited.body.warnings.map((w) => w.field)).toEqual(['what_happened_teen']);
+  });
+
+  test('the source link gets the shared hash (tracking parameters ignored)', async () => {
+    const { urlHash } = require('../../current-affairs/services/sourceUrl');
+    const res = await send('post', '/stories', full());
+    expect(res.body.story.source_url_hash).toBe(urlHash('https://nasa.gov/x'));
+  });
+
+  test('a picture link must be https', async () => {
+    expect((await send('post', '/stories', { ...full(), image_url: 'http://x.in/a.jpg' })).status).toBe(400);
+    const ok = await send('post', '/stories', { ...full(), image_url: 'https://x.in/a.jpg' });
+    expect(ok.body.story.image_url).toBe('https://x.in/a.jpg');
+  });
+});
+
+describe('bulk review', () => {
+  test("publish selected as today's digest: stamped, dated today, then shown to students", async () => {
+    const a = storyRow({ n: 1, status: 'review', publish_date: '2026-11-08', review_notes: 'AUTO: VERIFIED' });
+    const b = storyRow({ n: 2, status: 'draft', publish_date: '2026-11-08' });
+    const live = storyRow({ n: 3, status: 'published', publish_date: '2026-11-08' });
+    const gone = storyRow({ n: 4, status: 'rejected' });
+    supabase.__seed('ca_stories', [a, b, live, gone]);
+    const res = await send('post', '/stories/bulk-status', { ids: [a.id, b.id, live.id, gone.id, 'nope'], status: 'published', publishDate: 'today' });
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toBe(2);
+    expect(res.body.results).toEqual([
+      { id: a.id, ok: true, status: 'published', publish_date: '2026-11-09' },
+      { id: b.id, ok: true, status: 'published', publish_date: '2026-11-09' },
+      { id: live.id, ok: false, reason: 'not waiting for review (it is published)' },
+      { id: gone.id, ok: false, reason: 'not waiting for review (it is rejected)' },
+      { id: 'nope', ok: false, reason: 'not a story id' },
+    ]);
+    const saved = supabase.__rows('ca_stories').find((r) => r.id === a.id);
+    expect(saved).toMatchObject({ reviewed_by: EDITOR, is_true_fact: true });
+    const digest = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
+    expect(digest.body.date).toBe('2026-11-09');
+    expect(digest.body.stories.map((s) => s.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  test('reject selected; publishing without a date keeps each story’s own date', async () => {
+    const a = storyRow({ n: 1, status: 'review', publish_date: '2026-11-08' });
+    const b = storyRow({ n: 2, status: 'review', publish_date: '2026-11-07' });
+    supabase.__seed('ca_stories', [a, b]);
+    expect((await send('post', '/stories/bulk-status', { ids: [a.id], status: 'rejected' })).body.results[0]).toMatchObject({ ok: true, status: 'rejected' });
+    expect((await send('post', '/stories/bulk-status', { ids: [b.id], status: 'published' })).body.results[0]).toMatchObject({ ok: true, publish_date: '2026-11-07' });
+  });
+
+  test('checks its input and needs an editor', async () => {
+    const ids = Array.from({ length: 21 }, () => storyRow().id);
+    expect((await send('post', '/stories/bulk-status', { ids, status: 'published' })).status).toBe(400);
+    expect((await send('post', '/stories/bulk-status', { ids: [], status: 'published' })).status).toBe(400);
+    expect((await send('post', '/stories/bulk-status', { ids: [ids[0]], status: 'archived' })).status).toBe(400);
+    expect((await send('post', '/stories/bulk-status', { ids: [ids[0]], status: 'published', publishDate: '2026-01-01' })).status).toBe(400);
+    expect((await send('post', '/stories/bulk-status', { ids: [ids[0]], status: 'published' }, 'kid@school.in')).status).toBe(403);
+  });
+
+  test('last auto run: when the pipeline last saved stories, and how many were verified', async () => {
+    expect((await get('/pipeline/last-run')).body).toEqual({ lastRun: null });
+    supabase.__seed('ca_stories', [
+      storyRow({ n: 1, status: 'review', review_notes: 'AUTO: VERIFIED', created_at: '2026-11-09T00:31:00Z' }),
+      storyRow({ n: 2, status: 'review', review_notes: 'AUTO: CHECK - the figure', created_at: '2026-11-09T00:32:00Z' }),
+      storyRow({ n: 3, status: 'review', review_notes: null, created_at: '2026-11-09T05:00:00Z' }),
+    ]);
+    expect((await get('/pipeline/last-run')).body.lastRun).toEqual({ at: '2026-11-09T00:32:00Z', date: '2026-11-09', saved: 2, verified: 1 });
+  });
+});
+
+describe('quiz question ↔ story link', () => {
+  const q = (over) => ({
+    week_start: '2026-11-08', age_group: '7-12', category: 'india', question_type: 'true_false',
+    question: 'Q?', options: ['True', 'False'], correct_index: 0, explanation: 'Because.', ...over,
+  });
+
+  test('no story is fine (written by an editor)', async () => {
+    const res = await send('post', '/quiz', q());
+    expect(res.status).toBe(201);
+    expect(res.body.warnings).toEqual([]);
+  });
+
+  test('an unknown, invalid or rejected story is refused with a clear message', async () => {
+    const rejected = storyRow({ status: 'rejected' });
+    supabase.__seed('ca_stories', [rejected]);
+    expect((await send('post', '/quiz', q({ story_id: 'abc' }))).body.error).toBe('story_id is not a valid story id');
+    expect((await send('post', '/quiz', q({ story_id: '00000000-0000-4000-8000-000000000000' }))).body.error).toBe('story_id does not match any story');
+    const res = await send('post', '/quiz', q({ story_id: rejected.id }));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('story_id points to a rejected story');
+  });
+
+  test('a story from outside the quiz week only warns, on create and on edit', async () => {
+    const inWeek = storyRow({ n: 1, publish_date: '2026-11-03', status: 'review' });
+    const old = storyRow({ n: 2, publish_date: '2026-10-20' });
+    supabase.__seed('ca_stories', [inWeek, old]);
+    const ok = await send('post', '/quiz', q({ story_id: inWeek.id }));
+    expect(ok.status).toBe(201);
+    expect(ok.body.warnings).toEqual([]);
+    const edited = await send('patch', `/quiz/${ok.body.question.id}`, { story_id: old.id });
+    expect(edited.status).toBe(200);
+    expect(edited.body.warnings[0].message).toContain("published on 2026-10-20, outside this quiz's week (2026-11-02 to 2026-11-08)");
+  });
+});
+
 describe('quiz', () => {
   test("lists this week's questions with answers, in order", async () => {
     supabase.__seed('ca_quiz_questions', weekQuestions({ status: 'review' }));
