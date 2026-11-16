@@ -137,10 +137,14 @@ missing or wrong header (or no `CA_PIPELINE_SECRET` on the service) is `401`.
 | Daily news | 6:00 AM every day | `30 0 * * *` |
 | Weekly quiz | Saturday 8:00 PM (for Sunday's quiz) | `30 14 * * 6` |
 
-A Render Cron Job running the `curl` above works, but Render bills cron jobs
-by the minute (no free tier). A free option is a scheduled GitHub Actions
-workflow that runs the same `curl` with the secret stored as a repository
-secret. Nothing was created for this; set it up by hand.
+These run as scheduled GitHub Actions in this repo
+(`.github/workflows/daily-digest.yml`, `weekly-quiz.yml`), which run the
+scripts above directly (not the `curl`), so they need these **repository
+secrets**, under exactly these names (Settings → Secrets and variables →
+Actions): `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `GROQ_API_KEY`. Without them
+the job fails at once with `missing settings: …` naming each one. A run whose
+AI step fails also fails the job, rather than passing with no stories. Both
+workflows can also be started by hand from the Actions tab.
 
 **Editor's daily routine**
 

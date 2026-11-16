@@ -3,8 +3,15 @@
 // Saves (status 'review') only without --dry-run and with CA_PIPELINE_ENABLED=true.
 require('dotenv').config();
 const { generateWeeklyQuiz, summarizeQuiz } = require('../current-affairs/pipeline/quizGen');
+const { QUIZ_SETTINGS, missingSettings, missingSettingsMessage } = require('./lib/pipelineCli');
 
 (async () => {
+  // Even a dry run reads the week's published stories from the database.
+  const missing = missingSettings(QUIZ_SETTINGS);
+  if (missing.length) {
+    console.error(missingSettingsMessage('[ca-quiz]', missing));
+    process.exit(1);
+  }
   const arg = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split('=')[1];
   const report = await generateWeeklyQuiz({
     supabase: require('../services/supabase'),
