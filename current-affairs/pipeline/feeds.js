@@ -1,5 +1,9 @@
 // Approved news sources (and only these), fetching and RSS/Atom parsing.
 // A feed that fails is skipped and listed in the run report; it never stops a run.
+//
+// Sources now come from the ca_sources table (enabled rows only). The hardcoded
+// FEEDS list below is the fallback when the table is empty or not yet migrated,
+// and the seed values match the spec's approved sources.
 
 const FEEDS = [
   { source: 'The Hindu', category: 'india', url: 'https://www.thehindu.com/news/national/feeder/default.rss' },
@@ -19,6 +23,19 @@ const PIB_MAX_FEEDS = 4;
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const TIMEOUT_MS = 15000;
+
+// Read enabled RSS sources from the ca_sources table. Falls back to the
+// hardcoded FEEDS list when the table is empty or not yet migrated.
+async function loadSources(supabase) {
+  try {
+    const rows = await supabase.from('ca_sources').select('name, category, url').eq('enabled', true).order('category');
+    const sources = rows?.data || [];
+    if (sources.length) return sources.map((s) => ({ source: s.name, category: s.category, url: s.url }));
+  } catch (e) {
+    // Table not set up yet → fall through to hardcoded FEEDS.
+  }
+  return FEEDS;
+}
 
 // GET with a normal browser User-Agent, a 15 s timeout and one retry.
 async function fetchText(url, { fetchImpl = (...a) => fetch(...a), timeoutMs = TIMEOUT_MS } = {}) {
