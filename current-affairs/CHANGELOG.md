@@ -1,5 +1,32 @@
 # CHANGELOG — Current Affairs Module
 
+## 2026-11-16 — The World & You: GK fact from the book, safer On This Day
+
+- **GK fact** (`GET /daily-tidbit`, GK tab card) now comes from today's
+  important day in `current-affairs/data/gk-events.json` (India date; the next
+  important day when the book skips a date), via `services/gkBookFact.js`.
+  The AI-written fact was often wrong (e.g. "the world's biggest desert is
+  the Arctic"). The AI fact remains only as a fallback if the book has nothing.
+- **On This Day** filter (`services/onThisDay.js`) now also drops diseases and
+  outbreaks, soap operas/weddings, crime, drugs and revolutionaries; "television"
+  no longer counts as a child-friendly topic (it ranked a soap-opera wedding first).
+- **Data**: 5 March is two events (Maha Shivaratri; International Day for
+  Disarmament and Non-Proliferation): the book writes that header with " / ".
+
+## 2026-11-16 — GK Facts (important days calendar) moved here
+
+GK Facts was built in aivorah-current-affairs-service, which is not deployed,
+so none of it was reachable from the app. It now lives in this module under
+`/current-affairs/gk` (today, date, event, search, quiz, upcoming, calendar).
+
+- `routes/gk-facts.js`, `services/gk-facts.js`, `data/gk-events.json`,
+  `scripts/build-gk-events.py`, `tests/current-affairs/gk-facts.test.js`.
+- Ported with the fixes made there: `/gk/today` used to always return no
+  events, quiz wrong answers were always the same three January events, and
+  the data is a clean re-extraction from the PDF (390 events; the old file
+  had text from neighbouring days mixed into 142 entries).
+- No database, no sign-in, no new environment variables.
+
 ## 2026-11-16 — Fix: student digest shows blank when nothing is published today
 
 ### Problem
