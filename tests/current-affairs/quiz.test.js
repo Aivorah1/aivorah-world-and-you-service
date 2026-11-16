@@ -30,6 +30,17 @@ function submit(body, email = EMAIL) {
   return request(app).post('/current-affairs/quiz/submit').set(auth(email)).send({ studentEmail: email, ageGroup: '7-12', ...body });
 }
 
+// Helper: check answers server-side via /check, then submit grades the recorded ones.
+async function takeQuiz(rows, correctCount, email = EMAIL, ageGroup = '7-12', weekStart) {
+  for (let i = 0; i < rows.length; i++) {
+    const selected = i < correctCount ? rows[i].correct_index : (rows[i].correct_index + 1) % rows[i].options.length;
+    await request(app).post('/current-affairs/quiz/check').set(auth(email))
+      .send({ studentEmail: email, ageGroup, questionId: rows[i].id, answer: selected });
+  }
+  return request(app).post('/current-affairs/quiz/submit').set(auth(email))
+    .send({ studentEmail: email, ageGroup, weekStart });
+}
+
 describe('GET /current-affairs/quiz/week', () => {
   test('returns 10 questions: 2 per category group, 6 MCQ / 2 true-false / 2 reasoning, no answers', async () => {
     supabase.__seed('ca_quiz_questions', weekQuestions());
@@ -79,7 +90,7 @@ describe('GET /current-affairs/quiz/week', () => {
   test("with studentEmail, includes the student's attempt once they have taken it", async () => {
     const rows = weekQuestions();
     supabase.__seed('ca_quiz_questions', rows);
-    await submit({ answers: answersFor(rows, 6) });
+    await takeQuiz(rows, 6);
     const res = await request(app).get(`/current-affairs/quiz/week?ageGroup=7-12&studentEmail=${EMAIL}`).set(auth(EMAIL));
     expect(res.body.attempt).toMatchObject({ score: 6, total: 10, percentage: 60 });
     expect(res.body.attempt.results).toHaveLength(10);
@@ -135,43 +146,58 @@ describe('gradeQuiz', () => {
 });
 
 describe('POST /current-affairs/quiz/check', () => {
-  test('reveals the answer, explanation and extra fact for the chosen option', async () => {
+  test('requires sign-in and records the answer server-side, revealing the result once recorded', async () => {
     const [q] = weekQuestions();
     supabase.__seed('ca_quiz_questions', [q]);
-    const right = await request(app).post('/current-affairs/quiz/check').send({ questionId: q.id, answer: 1 });
+    // Without studentEmail (no sign-in target) → 400 studentEmail required.
+    expect((await request(app).post('/current-affairs/quiz/check').send({ questionId: q.id, answer: 1 })).status).toBe(400);
+    // Signed in as the student, recording the correct answer.
+    const right = await request(app).post('/current-affairs/quiz/check').set(auth(EMAIL))
+      .send({ studentEmail: EMAIL, ageGroup: '7-12', questionId: q.id, answer: 1 });
     expect(right.body).toMatchObject({ correct: true, correctIndex: 1, explanation: 'Because.', extraFact: 'Extra fact.' });
-    const wrong = await request(app).post('/current-affairs/quiz/check').send({ questionId: q.id, answer: 0 });
-    expect(wrong.body.correct).toBe(false);
-    expect((await request(app).post('/current-affairs/quiz/check').send({ questionId: q.id, answer: 9 })).status).toBe(400);
+    // Recorded on an in-progress attempt.
+    const [attempt] = supabase.__rows('ca_quiz_attempts');
+    expect(attempt).toMatchObject({ student_email: EMAIL, age_group: '7-12', status: 'in_progress' });
+    expect(attempt.answers).toHaveLength(1);
+    // Re-checking the same question returns the recorded result without changing it (first answer is final).
+    const again = await request(app).post('/current-affairs/quiz/check').set(auth(EMAIL))
+      .send({ studentEmail: EMAIL, ageGroup: '7-12', questionId: q.id, answer: 0 });
+    expect(again.body.selected).toBe(1);
+    expect(supabase.__rows('ca_quiz_attempts')[0].answers).toHaveLength(1);
+    // Out-of-range answer → 400.
+    expect((await request(app).post('/current-affairs/quiz/check').set(auth(EMAIL))
+      .send({ studentEmail: EMAIL, ageGroup: '7-12', questionId: q.id, answer: 9 })).status).toBe(400);
   });
 
   test('unpublished questions stay hidden', async () => {
     const q = questionRow({ status: 'review' });
     supabase.__seed('ca_quiz_questions', [q]);
-    expect((await request(app).post('/current-affairs/quiz/check').send({ questionId: q.id, answer: 1 })).status).toBe(404);
+    expect((await request(app).post('/current-affairs/quiz/check').set(auth(EMAIL))
+      .send({ studentEmail: EMAIL, ageGroup: '7-12', questionId: q.id, answer: 1 })).status).toBe(404);
   });
 });
 
 describe('POST /current-affairs/quiz/submit', () => {
-  test('grades on the server and stores the attempt', async () => {
+  test('grades only the answers recorded via /check and stores the attempt as submitted', async () => {
     const rows = weekQuestions();
     supabase.__seed('ca_quiz_questions', rows);
-    const res = await submit({ answers: answersFor(rows, 8) });
+    const res = await takeQuiz(rows, 8); // record 8 correct answers server-side, then submit
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ score: 8, total: 10, percentage: 80, excellence: true, alreadySubmitted: false, weekStart: '2026-11-08' });
     expect(res.body.results).toHaveLength(10);
-    expect(res.body.results[9]).toMatchObject({ correct: false, correctIndex: rows[9].correct_index, explanation: 'Because.' });
+    expect(res.body.results[9].correct).toBe(false);
 
     const [stored] = supabase.__rows('ca_quiz_attempts');
-    expect(stored).toMatchObject({ student_email: EMAIL, age_group: '7-12', week_start: '2026-11-08', score: 8, percentage: 80 });
+    expect(stored).toMatchObject({ student_email: EMAIL, age_group: '7-12', week_start: '2026-11-08', score: 8, percentage: 80, status: 'submitted' });
     expect(stored.answers).toHaveLength(10);
   });
 
   test('one attempt per week: a second submit returns the first result', async () => {
     const rows = weekQuestions();
     supabase.__seed('ca_quiz_questions', rows);
-    await submit({ answers: answersFor(rows, 4) });
-    const again = await submit({ answers: answersFor(rows, 10) });
+    await takeQuiz(rows, 4);
+    const again = await request(app).post('/current-affairs/quiz/submit').set(auth(EMAIL))
+      .send({ studentEmail: EMAIL, ageGroup: '7-12' });
     expect(again.body).toMatchObject({ score: 4, percentage: 40, alreadySubmitted: true });
     expect(supabase.__rows('ca_quiz_attempts')).toHaveLength(1);
   });
@@ -179,15 +205,17 @@ describe('POST /current-affairs/quiz/submit', () => {
   test('below 80% is not excellent', async () => {
     const rows = weekQuestions();
     supabase.__seed('ca_quiz_questions', rows);
-    const res = await submit({ answers: answersFor(rows, 7) });
+    const res = await takeQuiz(rows, 7);
     expect(res.body).toMatchObject({ percentage: 70, excellence: false });
   });
 
-  test("a quiz started last week can still be submitted against last week's questions", async () => {
+  test('past-week quizzes cannot be submitted (window closed after Saturday)', async () => {
     const rows = weekQuestions({ week_start: '2026-11-01' });
     supabase.__seed('ca_quiz_questions', rows);
+    // Freeze time to Monday of the current week → last week's quiz is closed for submission.
+    freezeTime('2026-11-09T06:00:00Z');
     const res = await submit({ weekStart: '2026-11-01', answers: answersFor(rows, 10) });
-    expect(res.body).toMatchObject({ weekStart: '2026-11-01', score: 10 });
+    expect(res.status).toBe(400);
   });
 
   test('validation, missing quiz and sign-in checks', async () => {
