@@ -1131,20 +1131,34 @@
     "full_text": "National Safety Day. A day to raise awareness about safety at home, school, workplace, and on the road. Accidents are a leading cause of death. Safety awareness can save lives. The National Safety Council started this day in 1966. Safety rules include wearing helmets, seatbelts, following traffic signals, and being careful with fire and electricity."
   },
   {
-    "description": "Maha Shivaratri The \"Great Night of Shiva\" — a Hindu festival dedicated to Lord Shiva. A day to promote disarmament (reducing weapons) and prevent the spread of nuclear weapons.",
+    "description": "The \"Great Night of Shiva\" — a Hindu festival dedicated to Lord Shiva.",
     "why_special": "",
     "how_celebrated": "",
     "story": "",
     "facts": [
-      "Devotees observe a fast and chant prayers throughout the night. International Day for Disarmament and Non-Proliferation",
-      "There are about 12,500 nuclear warheads in the world. Reducing them is essential for global peace."
+      "Devotees observe a fast and chant prayers throughout the night."
     ],
     "quote": "",
-    "event_name": "Maha Shivaratri / Disarmament Day",
+    "event_name": "Maha Shivaratri",
     "month": "March",
     "day": 5,
     "date": "03-05",
-    "full_text": "Maha Shivaratri / Disarmament Day. Maha Shivaratri The \"Great Night of Shiva\" — a Hindu festival dedicated to Lord Shiva. A day to promote disarmament (reducing weapons) and prevent the spread of nuclear weapons. Devotees observe a fast and chant prayers throughout the night. International Day for Disarmament and Non-Proliferation There are about 12,500 nuclear warheads in the world. Reducing them is essential for global peace."
+    "full_text": "Maha Shivaratri. The \"Great Night of Shiva\" — a Hindu festival dedicated to Lord Shiva. Devotees observe a fast and chant prayers throughout the night."
+  },
+  {
+    "description": "A day to promote disarmament (reducing weapons) and prevent the spread of nuclear weapons.",
+    "why_special": "",
+    "how_celebrated": "",
+    "story": "",
+    "facts": [
+      "There are about 12,500 nuclear warheads in the world. Reducing them is essential for global peace."
+    ],
+    "quote": "",
+    "event_name": "International Day for Disarmament and Non-Proliferation",
+    "month": "March",
+    "day": 5,
+    "date": "03-05",
+    "full_text": "International Day for Disarmament and Non-Proliferation. A day to promote disarmament (reducing weapons) and prevent the spread of nuclear weapons. There are about 12,500 nuclear warheads in the world. Reducing them is essential for global peace."
   },
   {
     "description": "A global day to celebrate women's achievements and fight for gender equality.",

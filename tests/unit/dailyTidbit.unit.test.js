@@ -4,6 +4,11 @@ jest.mock('groq-sdk', () => jest.fn().mockImplementation(() => ({
 })));
 jest.mock('axios');
 const axios = require('axios');
+// The GK fact normally comes from the important-days book. Most tests below
+// cover the AI fallback, used only when the book has nothing (null).
+const mockBookGKFact = jest.fn(() => null);
+jest.mock('../../services/gkBookFact', () => ({ bookGKFact: (...args) => mockBookGKFact(...args) }));
+const BOOK = { date: '2026-11-16', gk: { fact: 'Today is National Legal Services Day! Free legal help since 1987.', category: 'Important Day', eventName: 'National Legal Services Day', eventDate: '11-16' } };
 
 const {
   computeLevel,
@@ -180,7 +185,23 @@ describe('extractJSON', () => {
   });
 });
 
-describe('getDailyTidbit', () => {
+describe('getDailyTidbit — GK fact from the important-days book', () => {
+  test("returns today's book fact at once, the same for every grade, with no AI call", async () => {
+    mockBookGKFact.mockReturnValue(BOOK);
+    try {
+      const g3 = await getDailyTidbit('Grade 3 Book', false);
+      const g11 = await getDailyTidbit('Grade 11 Book', false);
+      expect(g3).toEqual({ grade: 'Grade 3 Book', date: '2026-11-16', gk: BOOK.gk, currentAffairs: null });
+      expect(g11.gk).toEqual(BOOK.gk);
+      expect(g3.partial).toBeUndefined();
+      expect(mockGroqCreate).not.toHaveBeenCalled();
+    } finally {
+      mockBookGKFact.mockReturnValue(null);
+    }
+  });
+});
+
+describe('getDailyTidbit — AI fallback when the book has nothing', () => {
   test('by default makes only the GK fact (current affairs moved to their own tab)', async () => {
     mockGroqCreate.mockResolvedValueOnce(groqResponse(JSON.stringify({ fact: 'Octopuses have three hearts.', category: 'Animals' })));
 

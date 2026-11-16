@@ -154,4 +154,16 @@ describe('pickEvents (child-safety filter)', () => {
     ]);
     expect(picked.map((e) => e.year)).toEqual([2000, 1970]);
   });
+
+  test('drops diseases, soap-opera weddings and crime; TV alone no longer ranks an event up', () => {
+    // Real Wikipedia entries for 16 November that reached Grade 5 students.
+    const picked = onThisDay.pickEvents([
+      { year: 2002, text: 'The first case of SARS, a zoonotic respiratory coronavirus disease, was recorded in Guangdong, China.' },
+      { year: 1981, text: 'About 30 million people watched the fictional couple Luke Spencer and Laura Webber wed on the television show General Hospital in the highest-rated hour in American soap opera history.' },
+      { year: 1995, text: 'The famous singer was arrested for drug smuggling.' },
+      { year: 1992, text: 'The largest hoard of Roman silver and gold in Britain was found in the village of Hoxne in Suffolk.' },
+      { year: 1959, text: 'The Sound of Music opened on Broadway.' },
+    ]);
+    expect(picked.map((e) => e.year)).toEqual([1992, 1959]);
+  });
 });

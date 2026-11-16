@@ -183,7 +183,8 @@ def main(src, out):
             flush()
             month, day = m.group(1), int(m.group(2))
             cur_date = (month, day)
-            names = [n.strip() for n in m.group(3).split('|') if n.strip()]
+            # events are separated by '|' (once by ' / ': "Maha Shivaratri / Disarmament Day")
+            names = [n.strip() for n in re.split(r'\||\s/\s', m.group(3)) if n.strip()]
             if len(names) == 1:
                 cur = {'event_name': names[0], 'month': month, 'day': day, '_buf': []}
             continue

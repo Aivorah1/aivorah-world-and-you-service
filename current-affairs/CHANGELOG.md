@@ -1,5 +1,18 @@
 # CHANGELOG — Current Affairs Module
 
+## 2026-11-16 — The World & You: GK fact from the book, safer On This Day
+
+- **GK fact** (`GET /daily-tidbit`, GK tab card) now comes from today's
+  important day in `current-affairs/data/gk-events.json` (India date; the next
+  important day when the book skips a date), via `services/gkBookFact.js`.
+  The AI-written fact was often wrong (e.g. "the world's biggest desert is
+  the Arctic"). The AI fact remains only as a fallback if the book has nothing.
+- **On This Day** filter (`services/onThisDay.js`) now also drops diseases and
+  outbreaks, soap operas/weddings, crime, drugs and revolutionaries; "television"
+  no longer counts as a child-friendly topic (it ranked a soap-opera wedding first).
+- **Data**: 5 March is two events (Maha Shivaratri; International Day for
+  Disarmament and Non-Proliferation): the book writes that header with " / ".
+
 ## 2026-11-16 — GK Facts (important days calendar) moved here
 
 GK Facts was built in aivorah-current-affairs-service, which is not deployed,

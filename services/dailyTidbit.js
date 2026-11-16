@@ -1,6 +1,7 @@
 const Groq  = require('groq-sdk');
 const axios = require('axios');
 const { within, fallbackGKFact } = require('./fastReply');
+const { bookGKFact } = require('./gkBookFact');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -311,6 +312,13 @@ function generateGK(grade) {
 }
 
 async function getDailyTidbit(grade, bust, { withCurrentAffairs = false, fastReplyMs } = {}) {
+  // The GK fact comes from the checked important-days book (today's day, or
+  // the next one): the same for every grade, instant, and never made up.
+  // The AI fact below is only a fallback if the book had nothing.
+  const book = bookGKFact();
+  if (book && !withCurrentAffairs) return { grade, date: book.date, gk: book.gk, currentAffairs: null };
+  if (book) return { grade, date: book.date, gk: book.gk, currentAffairs: await fetchCurrentAffairs(grade) };
+
   const key = cacheKey(grade);
   const cached = cache[key];
 
@@ -337,6 +345,7 @@ async function getDailyTidbit(grade, bust, { withCurrentAffairs = false, fastRep
 
 // Prepare today's GK fact for every grade so the first students get it instantly.
 async function prewarmDailyTidbits(grades, { concurrency = 2 } = {}) {
+  if (bookGKFact()) return; // today's fact comes from the book: nothing to prepare
   const queue = grades.filter((g) => !cache[cacheKey(g)]);
   const worker = async () => {
     while (queue.length) {
