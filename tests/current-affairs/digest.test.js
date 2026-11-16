@@ -107,12 +107,12 @@ describe('GET /current-affairs/digest/today', () => {
     expect(res.body.stories).toHaveLength(2);
   });
 
-  test('falls back to the most recent digest when nothing is published today', async () => {
+  test('returns blank when nothing is published today', async () => {
     seedStories(2, { publish_date: '2026-11-07' });
     seedStories(1, { publish_date: '2026-11-05' });
     const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
-    expect(res.body).toMatchObject({ date: '2026-11-07', isToday: false });
-    expect(res.body.stories).toHaveLength(2);
+    expect(res.body).toMatchObject({ date: '2026-11-09', isToday: true, stories: [] });
+    expect(res.body.stories).toHaveLength(0);
   });
 
   test('returns an empty digest when nothing has ever been published', async () => {
