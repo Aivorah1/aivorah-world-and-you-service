@@ -1,10 +1,8 @@
 // Step 1: read every approved feed, keep the last 24 hours, drop duplicates
 // and anything already saved (any status, rejected included).
-const { loadSources, PIB_INDEX, fetchText, parseFeed, extractPibFeeds } = require('./feeds');
+const { FEEDS, PIB_INDEX, fetchText, parseFeed, extractPibFeeds } = require('./feeds');
 const { urlHash } = require('../services/sourceUrl');
-const { check, isNotSetUp } = require('../services/db');
-
-const NEWSROOM_SCOPES = ['kid', 'teen', 'all'];
+const { check } = require('../services/db');
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -52,11 +50,9 @@ async function existingHashes(supabase, hashes) {
   return found;
 }
 
-async function collect({ supabase, fetchImpl, now = new Date(), feeds } = {}) {
+async function collect({ supabase, fetchImpl, now = new Date(), feeds = FEEDS } = {}) {
   const report = { feedsRead: [], feedsFailed: [], collected: 0, tooOld: 0, noDate: 0, duplicates: 0, alreadySaved: 0, kept: 0 };
-  // Load enabled sources from the table (falls back to hardcoded FEEDS).
-  const sourceFeeds = feeds || await loadSources(supabase);
-  const allFeeds = [...sourceFeeds, ...(sourceFeeds === FEEDS ? await pibFeeds(fetchImpl, report) : [])];
+  const allFeeds = [...feeds, ...(feeds === FEEDS ? await pibFeeds(fetchImpl, report) : [])];
   const raw = (await Promise.all(allFeeds.map((f) => readFeed(f, fetchImpl, report)))).flat();
   report.collected = raw.length;
 
@@ -83,34 +79,7 @@ async function collect({ supabase, fetchImpl, now = new Date(), feeds } = {}) {
     return true;
   });
   report.kept = items.length;
-
-  // Record newsroom items (best effort; skip if table not set up).
-  if (items.length && supabase) {
-    await recordNewsroomItems(supabase, items);
-  }
-
   return { items, report };
-}
-
-async function recordNewsroomItems(supabase, items) {
-  try {
-    const rows = items.map((i) => ({
-      source_url: i.link,
-      source_url_hash: i.hash,
-      headline: i.title,
-      summary: i.description || '',
-      scope: NEWSROOM_SCOPES.includes(i.scope) ? i.scope : 'all',
-      source_id: i.sourceId || null,
-      published_at: i.publishedAt || null,
-    }));
-    const { error } = await supabase.from('ca_newsroom_items').insert(rows);
-    if (error && !error.message?.includes('relation') && !error.message?.includes('does not exist')) {
-      // Log but do not fail the pipeline for newsroom recording errors.
-      console.error('[collect] newsroom insert warning:', error.message);
-    }
-  } catch (err) {
-    console.error('[collect] newsroom insert error:', err.message);
-  }
 }
 
 module.exports = { collect, similar, WINDOW_MS };

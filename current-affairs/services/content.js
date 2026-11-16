@@ -72,16 +72,7 @@ function readTimeSeconds(words, ageGroup) {
 
 // New words: 7-12 sees only new_word_1 (the simplest word, chosen for both
 // ages); 13-15 sees new_word_1..3, the ones that are filled in (2-3 words).
-// age_content overrides (age_content[ageGroup].new_words) take precedence when present.
 function wordsFor(row, ageGroup) {
-  const col = AGE_GROUPS[ageGroup].column;
-  const override = row.age_content?.[ageGroup]?.new_words;
-  if (Array.isArray(override) && override.length) {
-    return override
-      .filter((w) => w && String(w.word || '').trim() && String(w.definition || '').trim())
-      .slice(0, AGE_GROUPS[ageGroup].newWords)
-      .map((w) => ({ word: String(w.word), definition: String(w.definition) }));
-  }
   const list = [
     { word: row.new_word_1, definition: row.def_1 },
     { word: row.new_word_2, definition: row.def_2 },
@@ -94,13 +85,9 @@ function wordsFor(row, ageGroup) {
 }
 
 // A ca_stories row → the app's Story for one age group.
-// age_content overrides per-age fields (image, did_you_know, think_about_it, new_words)
-// when present; otherwise the base columns are used. Backward compatible with the
-// legacy age_extras shape.
 function toStory(row, ageGroup) {
   const col = AGE_GROUPS[ageGroup].column;
   const extras = row.age_extras?.[col] || {};
-  const override = row.age_content?.[ageGroup] || {};
   const story = {
     id: row.id,
     category: row.category,
@@ -109,15 +96,13 @@ function toStory(row, ageGroup) {
     summary: row[`summary_${col}`],
     whatHappened: row[`what_happened_${col}`],
     whyImportant: row[`why_important_${col}`],
-    didYouKnow: override.did_you_know ?? extras.didYouKnow ?? row.did_you_know ?? null,
+    didYouKnow: extras.didYouKnow || row.did_you_know || null,
     newWords: wordsFor(row, ageGroup),
-    thinkAboutIt: override.think_about_it ?? extras.thinkAboutIt ?? row.think_about_it ?? null,
-    imageUrl: override.image_url ?? row.image_url ?? null,
+    thinkAboutIt: extras.thinkAboutIt || row.think_about_it || null,
+    imageUrl: row.image_url || null,
     source: row.source,
     sourceUrl: row.source_url || null,
   };
-  // Impact field exists only for the 13-15 age group.
-  if (ageGroup === '13-15') story.impact = override.impact ?? null;
   story.readTimeSeconds = readTimeSeconds(
     wordCount(story.title, story.whatHappened, story.whyImportant, story.didYouKnow, story.thinkAboutIt,
       ...story.newWords.map((w) => `${w.word} ${w.definition}`)),
@@ -125,37 +110,6 @@ function toStory(row, ageGroup) {
   );
   return story;
 }
-
-// ── Workflow status helpers ─────────────────────────────────────────────────
-// The per-age status columns (status_kid/status_teen) are the source of truth.
-// Fall back to the legacy single `status` column when the per-age columns are
-// not yet set (old rows). 'published' on the legacy column maps to 'published'
-// for both ages.
-const STORY_PUBLISHED = 'published';
-
-function storyStatusFor(row, ageGroup) {
-  const col = AGE_GROUPS[ageGroup].column;
-  const perAge = row[`status_${col}`];
-  if (perAge) return perAge;
-  // Legacy fallback.
-  if (row.status === STORY_PUBLISHED) return STORY_PUBLISHED;
-  return row.status || null;
-}
-
-// A story is visible to students of an age group only when its per-age status
-// is 'published'.
-function isStoryPublished(row, ageGroup) {
-  return storyStatusFor(row, ageGroup) === STORY_PUBLISHED;
-}
-
-// The digest is the ordered list of published stories for a day and age group.
-// Students see only Published content for today or earlier (checked at the route).
-const DIGEST_STATUSES = ['not_started', 'in_review', 'approved', 'live', 'archived', 'missed'];
-const QUIZ_STATUSES = ['draft', 'in_review', 'review', 'approved', 'scheduled', 'live', 'published', 'archived', 'missed', 'rejected'];
-const SOURCE_KINDS = ['rss', 'api'];
-const SOURCE_CATEGORIES = ['india', 'world', 'economy', 'science', 'environment', 'sports', 'society', 'general'];
-const NEWSROOM_SCOPES = ['india', 'international'];
-const FACT_CHECK_VERDICTS = ['verified', 'unclear', 'contradicted'];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value) => UUID.test(String(value || ''));
@@ -185,6 +139,4 @@ module.exports = {
   AGE_GROUPS, AGE_GROUP_NAMES, CATEGORIES, normalizeAgeGroup,
   localDate, isDateString, addDays, daysBetween, quizWeekStart,
   toStory, readTimeSeconds, isUuid,
-  STORY_PUBLISHED, storyStatusFor, isStoryPublished,
-  DIGEST_STATUSES, QUIZ_STATUSES, SOURCE_KINDS, SOURCE_CATEGORIES, NEWSROOM_SCOPES, FACT_CHECK_VERDICTS,
 };
