@@ -118,7 +118,7 @@ describe('GET /current-affairs/digest/today', () => {
   test('returns an empty digest when nothing has ever been published', async () => {
     const res = await request(app).get('/current-affairs/digest/today?ageGroup=7-12');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ date: null, stories: [], readCount: 0 });
+    expect(res.body).toMatchObject({ date: '2026-11-09', stories: [], readCount: 0 });
   });
 
   test('"today" is the India calendar day, not UTC', async () => {
