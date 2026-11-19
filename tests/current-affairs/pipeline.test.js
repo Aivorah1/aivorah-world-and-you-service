@@ -261,8 +261,14 @@ describe('verify', () => {
 describe('write', () => {
   const item = { title: 'T', summary: 'S', keyFacts: ['f'], pageText: 'Source text.' };
 
-  test('word counts follow the rules: 7-12 45-90, 13-15 100-165', () => {
+  test('word counts follow the editor warning limits: 7-12 40-95, 13-15 90-165', () => {
     expect(checkWritten(goodStory()).story.wordCounts).toEqual({ kid: 60, teen: 120 });
+    // a few words short of the 100-150 target still reaches review (the daily job skipped a 97-word story)
+    expect(checkWritten(goodStory({ v1315: { ...goodStory().v1315, what_happened: words(97) } })).story.wordCounts.teen).toBe(97);
+    expect(checkWritten(goodStory({ v1315: { ...goodStory().v1315, what_happened: words(90) } })).story).toBeDefined();
+    expect(checkWritten(goodStory({ v1315: { ...goodStory().v1315, what_happened: words(86) } })).error).toMatch(/v1315.what_happened has 86 words \(needs 90-165\)/);
+    expect(checkWritten(goodStory({ v712: { ...goodStory().v712, what_happened: words(40) } })).story).toBeDefined();
+    expect(checkWritten(goodStory({ v712: { ...goodStory().v712, what_happened: words(96) } })).error).toMatch(/needs 40-95/);
     expect(checkWritten(goodStory({ v712: { ...goodStory().v712, what_happened: words(30) } })).error).toMatch(/v712.what_happened has 30 words/);
     expect(checkWritten(goodStory({ v1315: { ...goodStory().v1315, what_happened: words(200) } })).error).toMatch(/v1315.what_happened has 200 words/);
     expect(checkWritten(goodStory({ words: [] })).error).toMatch(/words/);
