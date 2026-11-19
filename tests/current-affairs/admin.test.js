@@ -70,6 +70,28 @@ describe('stories', () => {
     expect((await send('post', '/stories/00000000-0000-4000-8000-000000000000/status', { status: 'published' })).status).toBe(404);
   });
 
+  test('a rejected story is never published: it can only be archived', async () => {
+    const row = storyRow({ status: 'rejected' });
+    supabase.__seed('ca_stories', [row]);
+    for (const status of ['published', 'review', 'draft']) {
+      const res = await send('post', `/stories/${row.id}/status`, { status });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/rejected/);
+    }
+    expect(supabase.__rows('ca_stories')[0].status).toBe('rejected');
+    expect((await request(app).get('/current-affairs/digest/today?ageGroup=7-12')).body.stories).toHaveLength(0);
+    expect((await send('post', `/stories/${row.id}/status`, { status: 'archived' })).body.story.status).toBe('archived');
+  });
+
+  test('publish, unpublish and reject still work from the statuses an editor uses', async () => {
+    const row = storyRow({ status: 'review' });
+    supabase.__seed('ca_stories', [row]);
+    expect((await send('post', `/stories/${row.id}/status`, { status: 'published' })).body.story.status).toBe('published');
+    expect((await send('post', `/stories/${row.id}/status`, { status: 'review' })).body.story.status).toBe('review'); // unpublish
+    expect((await send('post', `/stories/${row.id}/status`, { status: 'rejected' })).body.story.status).toBe('rejected');
+    expect((await send('post', `/stories/${row.id}/status`, { status: 'draft' })).status).toBe(409);
+  });
+
   test('an editor writes a new story: the two age versions (7-12, 13-15) are required', async () => {
     const full = { category: 'science', source: 'NASA', source_url: 'https://www.nasa.gov/x' };
     for (const f of ['title', 'summary', 'what_happened', 'why_important']) for (const a of ['kid', 'teen']) full[`${f}_${a}`] = `${f} ${a}`;
@@ -213,6 +235,14 @@ describe('quiz question ↔ story link', () => {
 });
 
 describe('quiz', () => {
+  test('a rejected question is never published, alone or with the whole week', async () => {
+    const q = questionRow({ status: 'rejected' });
+    supabase.__seed('ca_quiz_questions', [q]);
+    expect((await send('post', `/quiz/${q.id}/status`, { status: 'published' })).status).toBe(409);
+    expect((await send('post', '/quiz/publish', { weekStart: '2026-11-08', ageGroup: '7-12' })).body.published).toBe(0);
+    expect(supabase.__rows('ca_quiz_questions')[0].status).toBe('rejected');
+  });
+
   test("lists this week's questions with answers, in order", async () => {
     supabase.__seed('ca_quiz_questions', weekQuestions({ status: 'review' }));
     const res = await get('/quiz?ageGroup=7-12');
@@ -283,7 +313,11 @@ describe('analytics', () => {
       { student_email: 'a@x.in', story_id: 's4', age_group: '7-12', read_date: '2026-09-25', duration_seconds: 30 },
     ]);
     supabase.__seed('ca_digest_views', [{ student_email: 'a@x.in', age_group: '7-12', view_date: '2026-11-08', story_count: 2 }]);
-    supabase.__seed('ca_quiz_attempts', [{ student_email: 'a@x.in', age_group: '7-12', week_start: '2026-11-08', percentage: 80 }]);
+    supabase.__seed('ca_quiz_attempts', [
+      { student_email: 'a@x.in', age_group: '7-12', week_start: '2026-11-08', percentage: 80, total: 10 },
+      // b has only checked answers (not submitted, total 0): not a quiz played
+      { student_email: 'b@x.in', age_group: '7-12', week_start: '2026-11-08', percentage: 0, total: 0 },
+    ]);
     supabase.__seed('ca_progress', [
       { student_email: 'a@x.in', age_group: '7-12', current_streak: 2, updated_at: '2026-11-09T05:00:00Z' },
       { student_email: 'b@x.in', age_group: '7-12', current_streak: 1, updated_at: '2026-11-09T05:00:00Z' },

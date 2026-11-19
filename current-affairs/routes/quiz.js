@@ -22,6 +22,42 @@ async function findAttempt(email, ageGroup, weekStart) {
     .maybeSingle());
 }
 
+// An attempt row is created by the first /check (answers recorded, total 0)
+// and graded by /submit (total = number of questions, always > 0). Only a
+// submitted attempt is a result: points, analytics and the app ignore the rest.
+const isSubmitted = (attempt) => !!attempt && Number(attempt.total) > 0;
+const ATTEMPT_KEY = 'student_email,age_group,week_start';
+
+// Records the student's answer to one question the first time they check it
+// and returns the answer that counts. The first answer is final: checking
+// again (to see other options' results) returns the recorded one, so the
+// answer key cannot be probed before submitting.
+async function recordAnswer(email, ageGroup, question, answer) {
+  for (let tries = 0; tries < 3; tries++) {
+    const attempt = await findAttempt(email, ageGroup, question.week_start);
+    const answers = Array.isArray(attempt?.answers) ? attempt.answers : [];
+    const earlier = answers.find((a) => a && String(a.questionId) === String(question.id));
+    if (earlier && Number.isInteger(earlier.selected)) return earlier.selected;
+    // Already submitted (question left blank): nothing more to record.
+    if (isSubmitted(attempt)) return answer;
+    const next = [...answers, { questionId: question.id, selected: answer }];
+    if (!attempt) {
+      const inserted = check(await supabase.from('ca_quiz_attempts')
+        .upsert({
+          student_email: email, age_group: ageGroup, week_start: question.week_start,
+          answers: next, score: 0, total: 0, percentage: 0,
+        }, { onConflict: ATTEMPT_KEY, ignoreDuplicates: true })
+        .select());
+      if (inserted?.length) return answer;
+      continue; // created a moment ago by another request: read it again
+    }
+    const updated = check(await supabase.from('ca_quiz_attempts')
+      .update({ answers: next }).eq('id', attempt.id).eq('total', 0).select('id'));
+    if (updated?.length) return answer;
+  }
+  throw new Error('Could not record the answer');
+}
+
 // A stored attempt → the result the app shows (graded against the week's questions).
 function attemptResult(attempt, questions) {
   const answers = (attempt.answers || []).map((a) => ({ questionId: a.questionId, answer: a.selected }));
@@ -61,7 +97,7 @@ router.get('/week', requireSelf((req) => req.query.studentEmail), handle(async (
   let attempt = null;
   if (email && questions.length) {
     const row = await findAttempt(email, ageGroup, weekStart);
-    if (row) attempt = attemptResult(row, questions);
+    if (isSubmitted(row)) attempt = attemptResult(row, questions);
   }
   res.json({
     weekStart,
@@ -72,24 +108,34 @@ router.get('/week', requireSelf((req) => req.query.studentEmail), handle(async (
   });
 }));
 
-// ── POST /current-affairs/quiz/check { questionId, answer } ─────────────────
-// Reveals one question's answer after the student has picked an option.
-router.post('/check', handle(async (req, res) => {
-  const { questionId, answer } = req.body || {};
+// ── POST /current-affairs/quiz/check { studentEmail, ageGroup, questionId, answer } ──
+// The student's own sign-in is required. Records the answer (the first answer
+// to a question is final), then reveals that question's answer, explanation
+// and extra fact. Without the record, anyone could try every option of every
+// question and then submit a perfect quiz for points and badges.
+router.post('/check', requireSelf((req) => req.body?.studentEmail), handle(async (req, res) => {
+  const body = req.body || {};
+  const { questionId, answer } = body;
   if (!isUuid(questionId)) return res.status(400).json({ error: 'questionId required' });
   if (!Number.isInteger(answer) || answer < 0) return res.status(400).json({ error: 'answer must be the option index' });
+  const student = readStudent(res, body, { emailRequired: true });
+  if (!student) return;
+  const { ageGroup, email } = student;
 
   const row = check(await supabase.from('ca_quiz_questions').select('*')
-    .eq('id', questionId).eq('status', 'published').maybeSingle());
-  if (!row) return res.status(404).json({ error: 'Question not found' });
+    .eq('id', questionId).eq('status', 'published').eq('age_group', ageGroup).maybeSingle());
+  // Only this week's or last week's quiz can be played (same rule as /submit).
+  if (!row || !resolveWeek(row.week_start, localDate())) return res.status(404).json({ error: 'Question not found' });
   if (answer >= row.options.length) return res.status(400).json({ error: 'answer is not one of the options' });
 
-  res.json({ questionId, selected: answer, correct: answer === row.correct_index, ...reveal(row) });
+  const selected = await recordAnswer(email, ageGroup, row, answer);
+  res.json({ questionId, selected, correct: selected === row.correct_index, ...reveal(row) });
 }));
 
 // ── POST /current-affairs/quiz/submit { studentEmail, ageGroup, answers, weekStart? } ──
-// Grades on the server and stores one attempt per student per week. A second
-// submit for the same week returns the first result (alreadySubmitted: true).
+// Grades on the server and stores one attempt per student per week. Answers
+// already checked with /check are final; `answers` fills in the rest. A
+// second submit for the same week returns the first result (alreadySubmitted: true).
 router.post('/submit', requireSelf((req) => req.body?.studentEmail), handle(async (req, res) => {
   const body = req.body || {};
   const student = readStudent(res, body, { emailRequired: true });
@@ -102,26 +148,38 @@ router.post('/submit', requireSelf((req) => req.body?.studentEmail), handle(asyn
   const questions = await weekQuestions(ageGroup, weekStart);
   if (!questions.length) return res.status(404).json({ error: 'There is no quiz for this week yet' });
 
-  const graded = gradeQuiz(questions, body.answers);
-  const inserted = check(await supabase.from('ca_quiz_attempts')
-    .upsert({
-      student_email: email,
-      age_group: ageGroup,
-      week_start: weekStart,
+  const sent = new Map(body.answers.filter((a) => a && a.questionId).map((a) => [String(a.questionId), a.answer]));
+  for (let tries = 0; tries < 3; tries++) {
+    const existing = await findAttempt(email, ageGroup, weekStart);
+    if (isSubmitted(existing)) return res.json({ ...attemptResult(existing, questions), alreadySubmitted: true });
+
+    const recorded = new Map((existing?.answers || []).filter((a) => a && a.questionId)
+      .map((a) => [String(a.questionId), a.selected]));
+    const final = questions.map((q) => ({
+      questionId: q.id,
+      answer: recorded.has(String(q.id)) ? recorded.get(String(q.id)) : sent.get(String(q.id)),
+    }));
+    const graded = gradeQuiz(questions, final);
+    const fields = {
       answers: graded.results.map((r) => ({
         questionId: r.questionId, selected: r.selected, correctIndex: r.correctIndex, correct: r.correct,
       })),
       score: graded.score,
       total: graded.total,
       percentage: graded.percentage,
-    }, { onConflict: 'student_email,age_group,week_start', ignoreDuplicates: true })
-    .select());
+    };
 
-  if (!inserted?.length) {
-    const existing = await findAttempt(email, ageGroup, weekStart);
-    return res.json({ ...attemptResult(existing, questions), alreadySubmitted: true });
+    const saved = existing
+      // Only while still in progress (total 0): two submits cannot both grade it.
+      ? check(await supabase.from('ca_quiz_attempts').update(fields).eq('id', existing.id).eq('total', 0).select())
+      : check(await supabase.from('ca_quiz_attempts')
+        .upsert({ student_email: email, age_group: ageGroup, week_start: weekStart, ...fields },
+          { onConflict: ATTEMPT_KEY, ignoreDuplicates: true })
+        .select());
+    if (saved?.length) return res.json({ ...attemptResult(saved[0], questions), alreadySubmitted: false });
+    // Another request got there first: read the attempt again.
   }
-  res.json({ ...attemptResult(inserted[0], questions), alreadySubmitted: false });
+  throw new Error('Could not save the quiz');
 }));
 
 module.exports = router;
