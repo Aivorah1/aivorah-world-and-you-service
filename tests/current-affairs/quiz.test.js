@@ -134,21 +134,80 @@ describe('gradeQuiz', () => {
   });
 });
 
+function checkAnswer(questionId, answer, email = EMAIL, extra = {}) {
+  return request(app).post('/current-affairs/quiz/check').set(auth(email))
+    .send({ studentEmail: email, ageGroup: '7-12', questionId, answer, ...extra });
+}
+
 describe('POST /current-affairs/quiz/check', () => {
   test('reveals the answer, explanation and extra fact for the chosen option', async () => {
     const [q] = weekQuestions();
     supabase.__seed('ca_quiz_questions', [q]);
-    const right = await request(app).post('/current-affairs/quiz/check').send({ questionId: q.id, answer: 1 });
-    expect(right.body).toMatchObject({ correct: true, correctIndex: 1, explanation: 'Because.', extraFact: 'Extra fact.' });
-    const wrong = await request(app).post('/current-affairs/quiz/check').send({ questionId: q.id, answer: 0 });
-    expect(wrong.body.correct).toBe(false);
-    expect((await request(app).post('/current-affairs/quiz/check').send({ questionId: q.id, answer: 9 })).status).toBe(400);
+    const right = await checkAnswer(q.id, 1);
+    expect(right.status).toBe(200);
+    expect(right.body).toMatchObject({ selected: 1, correct: true, correctIndex: 1, explanation: 'Because.', extraFact: 'Extra fact.' });
+    expect((await checkAnswer(q.id, 9)).status).toBe(400);
   });
 
-  test('unpublished questions stay hidden', async () => {
-    const q = questionRow({ status: 'review' });
+  test('the first answer is final: checking other options cannot probe the answer key', async () => {
+    const [q] = weekQuestions();
     supabase.__seed('ca_quiz_questions', [q]);
-    expect((await request(app).post('/current-affairs/quiz/check').send({ questionId: q.id, answer: 1 })).status).toBe(404);
+    const first = await checkAnswer(q.id, 0);
+    expect(first.body).toMatchObject({ selected: 0, correct: false });
+    const probe = await checkAnswer(q.id, 1); // the right answer, now that it was revealed
+    expect(probe.body).toMatchObject({ selected: 0, correct: false });
+    const [attempt] = supabase.__rows('ca_quiz_attempts');
+    expect(attempt).toMatchObject({ student_email: EMAIL, total: 0, answers: [{ questionId: q.id, selected: 0 }] });
+  });
+
+  test("needs the student's own sign-in and their age group", async () => {
+    const [q] = weekQuestions();
+    supabase.__seed('ca_quiz_questions', [q]);
+    expect((await request(app).post('/current-affairs/quiz/check').send({ ageGroup: '7-12', questionId: q.id, answer: 1 })).status).toBe(400);
+    expect((await request(app).post('/current-affairs/quiz/check').send({ studentEmail: EMAIL, ageGroup: '7-12', questionId: q.id, answer: 1 })).status).toBe(401);
+    expect((await checkAnswer(q.id, 1, EMAIL, { studentEmail: 'other@school.in' })).status).toBe(403);
+    expect((await checkAnswer(q.id, 1, EMAIL, { ageGroup: '13-15' })).status).toBe(404); // another age group's question
+    expect(supabase.__rows('ca_quiz_attempts')).toHaveLength(0);
+  });
+
+  test('unpublished and old questions stay hidden', async () => {
+    const draft = questionRow({ status: 'review' });
+    const old = questionRow({ week_start: '2026-10-25' });
+    supabase.__seed('ca_quiz_questions', [draft, old]);
+    expect((await checkAnswer(draft.id, 1)).status).toBe(404);
+    expect((await checkAnswer(old.id, 1)).status).toBe(404);
+  });
+});
+
+describe('checked answers and the submitted quiz', () => {
+  test('submit uses the checked answers, not changed ones sent later', async () => {
+    const rows = weekQuestions();
+    supabase.__seed('ca_quiz_questions', rows);
+    await checkAnswer(rows[0].id, (rows[0].correct_index + 1) % rows[0].options.length); // wrong, then "fixed" below
+    const res = await submit({ answers: answersFor(rows, 10) });
+    expect(res.body).toMatchObject({ score: 9, total: 10, alreadySubmitted: false });
+    expect(res.body.results[0].correct).toBe(false);
+    expect(supabase.__rows('ca_quiz_attempts')).toHaveLength(1);
+  });
+
+  test('a quiz only being answered is not a result: no attempt shown, no points', async () => {
+    const rows = weekQuestions();
+    supabase.__seed('ca_quiz_questions', rows);
+    await checkAnswer(rows[0].id, rows[0].correct_index);
+    const week = await request(app).get(`/current-affairs/quiz/week?ageGroup=7-12&studentEmail=${EMAIL}`).set(auth(EMAIL));
+    expect(week.body.attempt).toBeNull();
+    const points = await request(app).post('/current-affairs/progress/quiz-complete').set(auth(EMAIL)).send({ studentEmail: EMAIL, ageGroup: '7-12' });
+    expect(points.status).toBe(404);
+    expect(supabase.__rows('ca_quiz_attempts')[0].points_awarded).toBe(false);
+  });
+
+  test('after submitting, checking again changes nothing', async () => {
+    const rows = weekQuestions();
+    supabase.__seed('ca_quiz_questions', rows);
+    await submit({ answers: answersFor(rows, 5) });
+    await checkAnswer(rows[9].id, rows[9].correct_index);
+    const again = await submit({ answers: answersFor(rows, 10) });
+    expect(again.body).toMatchObject({ score: 5, alreadySubmitted: true });
   });
 });
 

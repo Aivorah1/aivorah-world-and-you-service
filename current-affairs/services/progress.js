@@ -107,6 +107,8 @@ async function recordStoryRead(email, ageGroup, storyId, today, durationSeconds 
 async function findAttempt(email, ageGroup, { attemptId, weekStart }) {
   let query = supabase.from('ca_quiz_attempts').select('*').eq('student_email', email).eq('age_group', ageGroup);
   query = attemptId ? query.eq('id', attemptId) : query.eq('week_start', weekStart);
+  // Only a submitted attempt (total > 0) earns points; answers being checked do not.
+  query = query.gt('total', 0);
   return check(await query.maybeSingle());
 }
 

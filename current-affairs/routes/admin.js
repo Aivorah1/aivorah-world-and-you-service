@@ -62,6 +62,37 @@ function storyPatch(body, { creating }) {
   return { patch };
 }
 
+// Which status an item may move to from which. A rejected story or question
+// can only be archived: it must never be published, or brought back to be
+// published later. Publishing needs a story an editor is reviewing (or a draft).
+const ALLOWED_FROM = {
+  published: ['draft', 'review', 'published'],
+  review: ['draft', 'review', 'published'],
+  draft: ['draft', 'review'],
+  rejected: ['draft', 'review', 'published', 'rejected'],
+  archived: STATUSES,
+};
+
+// Moves one story/question to `status` only if its current status allows it.
+// Answers 404 / 409 itself and returns null, or returns the updated row.
+async function changeStatus(res, table, id, status, stamp, label) {
+  const current = check(await supabase.from(table).select('status').eq('id', id).maybeSingle());
+  if (!current) { res.status(404).json({ error: `${label} not found` }); return null; }
+  const from = ALLOWED_FROM[status];
+  if (!from.includes(current.status)) {
+    res.status(409).json({
+      error: current.status === 'rejected'
+        ? `This ${label.toLowerCase()} was rejected, so it can only be archived, never published.`
+        : `A ${current.status} ${label.toLowerCase()} cannot be moved to ${status}.`,
+    });
+    return null;
+  }
+  // .in('status', from) again: the status cannot change in between.
+  const rows = check(await supabase.from(table).update(stamp).eq('id', id).in('status', from).select('*'));
+  if (!rows?.length) { res.status(409).json({ error: `The ${label.toLowerCase()} changed while saving. Reload and try again.` }); return null; }
+  return rows[0];
+}
+
 const reviewStamp = (req, status) => ({
   status,
   reviewed_by: req.editorEmail,
@@ -156,9 +187,9 @@ router.get('/pipeline/last-run', handle(async (req, res) => {
 router.post('/stories/:id/status', handle(async (req, res) => {
   const { status } = req.body || {};
   if (!STATUSES.includes(status)) return bad(res, `status must be one of ${STATUSES.join(', ')}`);
-  const rows = check(await supabase.from('ca_stories').update(reviewStamp(req, status)).eq('id', req.params.id).select('*'));
-  if (!rows?.length) return res.status(404).json({ error: 'Story not found' });
-  res.json({ story: rows[0] });
+  if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Story not found' });
+  const story = await changeStatus(res, 'ca_stories', req.params.id, status, reviewStamp(req, status), 'Story');
+  if (story) res.json({ story });
 }));
 
 // ── Quiz ────────────────────────────────────────────────────────────────────
@@ -285,10 +316,10 @@ router.patch('/quiz/:id', handle(async (req, res) => {
 router.post('/quiz/:id/status', handle(async (req, res) => {
   const { status } = req.body || {};
   if (!STATUSES.includes(status)) return bad(res, `status must be one of ${STATUSES.join(', ')}`);
+  if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Question not found' });
   const { is_true_fact: _ignored, ...stamp } = reviewStamp(req, status);
-  const rows = check(await supabase.from('ca_quiz_questions').update(stamp).eq('id', req.params.id).select('*'));
-  if (!rows?.length) return res.status(404).json({ error: 'Question not found' });
-  res.json({ question: rows[0] });
+  const question = await changeStatus(res, 'ca_quiz_questions', req.params.id, status, stamp, 'Question');
+  if (question) res.json({ question });
 }));
 
 // POST /admin/quiz/publish { weekStart, ageGroup } — publish every question of

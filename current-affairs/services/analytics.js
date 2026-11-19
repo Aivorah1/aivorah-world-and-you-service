@@ -41,7 +41,8 @@ async function activity({ from, to, ageGroup }) {
     fetchAll(() => byAge(supabase.from('ca_digest_views').select('student_email, view_date')
       .gte('view_date', from).lte('view_date', to)).order('view_date', { ascending: true })),
     // A quiz week starting up to 6 days before the range is still being played in it.
-    fetchAll(() => byAge(supabase.from('ca_quiz_attempts').select('student_email, week_start, percentage')
+    // Submitted quizzes only (total > 0), not quizzes still being answered.
+    fetchAll(() => byAge(supabase.from('ca_quiz_attempts').select('student_email, week_start, percentage').gt('total', 0)
       .gte('week_start', addDays(from, -6)).lte('week_start', to)).order('week_start', { ascending: true })),
   ]);
   return { reads, views, attempts };
