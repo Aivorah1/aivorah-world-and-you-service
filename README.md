@@ -135,7 +135,7 @@ missing or wrong header (or no `CA_PIPELINE_SECRET` on the service) is `401`.
 | Job | When (India) | Cron (UTC) |
 |---|---|---|
 | Daily news | 6:00 AM every day | `30 0 * * *` |
-| Weekly quiz | Saturday 8:00 PM (for Sunday's quiz) | `30 14 * * 6` |
+| Weekly quiz | Sunday 12:30 AM (that Sunday's quiz, from the 7 days before it) | `0 19 * * 6` |
 
 These run as scheduled GitHub Actions in this repo
 (`.github/workflows/daily-digest.yml`, `weekly-quiz.yml`), which run the

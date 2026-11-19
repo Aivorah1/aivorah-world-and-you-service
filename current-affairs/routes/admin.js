@@ -6,7 +6,7 @@ const supabase = require('../../services/supabase');
 const { check } = require('../services/db');
 const { requireEditor } = require('../middleware/adminAuth');
 const { handle } = require('./helpers');
-const { AGE_GROUPS, normalizeAgeGroup, localDate, isDateString, addDays, quizWeekStart, lengthWarnings, isUuid } = require('../services/content');
+const { AGE_GROUPS, normalizeAgeGroup, localDate, isDateString, addDays, quizWeekStart, quizStoryWindow, lengthWarnings, isUuid } = require('../services/content');
 const { urlHash, isHttpsUrl } = require('../services/sourceUrl');
 const { computeMetrics, daysBetween } = require('../services/analytics');
 const audit = require('../services/audit');
@@ -406,16 +406,16 @@ router.get('/quiz', handle(async (req, res) => {
 
 // A question may name the story it comes from (optional for questions an
 // editor writes). The story must exist and not be rejected; one published
-// outside the 7 days ending on the quiz's Sunday only gets a warning.
+// outside the 7 days before the quiz's Sunday only gets a warning.
 async function checkStoryLink(storyId, weekStart) {
   if (!storyId) return { warnings: [] };
   if (!isUuid(storyId)) return { error: 'story_id is not a valid story id' };
   const story = check(await supabase.from('ca_stories').select('id, status, publish_date').eq('id', storyId).maybeSingle());
   if (!story) return { error: 'story_id does not match any story' };
   if (story.status === 'rejected') return { error: 'story_id points to a rejected story' };
-  const from = addDays(weekStart, -6);
-  const warnings = story.publish_date < from || story.publish_date > weekStart
-    ? [{ field: 'story_id', message: `The linked story was published on ${story.publish_date}, outside this quiz's week (${from} to ${weekStart}).` }]
+  const { from, to } = quizStoryWindow(weekStart);
+  const warnings = story.publish_date < from || story.publish_date > to
+    ? [{ field: 'story_id', message: `The linked story was published on ${story.publish_date}, outside this quiz's week (${from} to ${to}).` }]
     : [];
   return { warnings };
 }

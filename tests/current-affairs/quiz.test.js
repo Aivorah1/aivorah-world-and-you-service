@@ -35,7 +35,9 @@ describe('GET /current-affairs/quiz/week', () => {
     supabase.__seed('ca_quiz_questions', weekQuestions());
     const res = await request(app).get('/current-affairs/quiz/week?ageGroup=7-12');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ weekStart: '2026-11-08', ageGroup: '7-12', total: 10, attempt: null });
+    expect(res.body).toMatchObject({ weekStart: '2026-11-08', ageGroup: '7-12', total: 10, attempt: null, progress: [] });
+    // No time limit: the quiz is open until the Saturday, then next Sunday's quiz replaces it.
+    expect(res.body.dueDate).toBe('2026-11-14');
     const qs = res.body.questions;
     expect(qs).toHaveLength(10);
     expect(countBy(qs, (q) => SLOT[q.category])).toEqual({ india: 2, world: 2, science: 2, 'econ-env': 2, 'sports-society': 2 });
@@ -199,6 +201,36 @@ describe('checked answers and the submitted quiz', () => {
     const points = await request(app).post('/current-affairs/progress/quiz-complete').set(auth(EMAIL)).send({ studentEmail: EMAIL, ageGroup: '7-12' });
     expect(points.status).toBe(404);
     expect(supabase.__rows('ca_quiz_attempts')[0].points_awarded).toBe(false);
+  });
+
+  test('answers are saved one by one: leaving and coming back resumes with them', async () => {
+    const rows = weekQuestions();
+    supabase.__seed('ca_quiz_questions', rows);
+    const quiz = await request(app).get(`/current-affairs/quiz/week?ageGroup=7-12&studentEmail=${EMAIL}`).set(auth(EMAIL));
+    const [first, second] = quiz.body.questions;
+    const firstRow = rows.find((r) => r.id === first.id);
+    const secondRow = rows.find((r) => r.id === second.id);
+    await checkAnswer(first.id, firstRow.correct_index);
+    await checkAnswer(second.id, (secondRow.correct_index + 1) % secondRow.options.length);
+
+    // The student goes back and opens the quiz again (another day, another device).
+    const again = await request(app).get(`/current-affairs/quiz/week?ageGroup=7-12&studentEmail=${EMAIL}`).set(auth(EMAIL));
+    expect(again.body.attempt).toBeNull();
+    expect(again.body.progress).toEqual([
+      { questionId: first.id, selected: firstRow.correct_index, correct: true, correctIndex: firstRow.correct_index,
+        explanation: firstRow.explanation, extraFact: firstRow.extra_fact || null, storyId: firstRow.story_id || null },
+      expect.objectContaining({ questionId: second.id, correct: false, correctIndex: secondRow.correct_index }),
+    ]);
+    // Without the student's email nothing private is returned.
+    const anonymous = await request(app).get('/current-affairs/quiz/week?ageGroup=7-12');
+    expect(anonymous.body.progress).toEqual([]);
+
+    // Finishing later: the saved answers count, the rest are sent at submit.
+    const done = await submit({ answers: answersFor(rows, 10).filter((a) => a.questionId !== first.id && a.questionId !== second.id) });
+    expect(done.body).toMatchObject({ score: 9, total: 10, alreadySubmitted: false });
+    const after = await request(app).get(`/current-affairs/quiz/week?ageGroup=7-12&studentEmail=${EMAIL}`).set(auth(EMAIL));
+    expect(after.body.progress).toEqual([]);
+    expect(after.body.attempt).toMatchObject({ score: 9 });
   });
 
   test('after submitting, checking again changes nothing', async () => {

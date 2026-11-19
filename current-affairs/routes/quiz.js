@@ -1,6 +1,6 @@
 const express = require('express');
 const supabase = require('../../services/supabase');
-const { localDate, isDateString, addDays, quizWeekStart, isUuid } = require('../services/content');
+const { localDate, isDateString, addDays, quizWeekStart, quizDueDate, isUuid } = require('../services/content');
 const { pickQuizQuestions, publicQuestion, reveal, gradeQuiz } = require('../services/quiz');
 const { EXCELLENCE_PERCENT } = require('../services/rewards');
 const { check } = require('../services/db');
@@ -74,6 +74,19 @@ function attemptResult(attempt, questions) {
   };
 }
 
+// An attempt still in progress -> the answers already given, each with its
+// reveal, so the app can resume where the student left off.
+function attemptProgress(attempt, questions) {
+  const byId = new Map(questions.map((q) => [String(q.id), q]));
+  const progress = [];
+  for (const a of Array.isArray(attempt?.answers) ? attempt.answers : []) {
+    const q = a && byId.get(String(a.questionId));
+    if (!q || !Number.isInteger(a.selected) || progress.some((p) => p.questionId === q.id)) continue;
+    progress.push({ questionId: q.id, selected: a.selected, correct: a.selected === q.correct_index, ...reveal(q) });
+  }
+  return progress;
+}
+
 // weekStart from the client must be this week's Sunday or last week's
 // (a quiz started on Saturday night can still be submitted after midnight).
 function resolveWeek(requested, today) {
@@ -84,8 +97,10 @@ function resolveWeek(requested, today) {
 }
 
 // ── GET /current-affairs/quiz/week?ageGroup=7-12&studentEmail=&weekStart= ───
-// This week's 10 questions without answers. With studentEmail, also the
-// student's attempt if they already took it (attempt: null otherwise).
+// This week's 10 questions without answers, and the due date (the Saturday:
+// no time limit before then). With studentEmail, also the student's attempt
+// if they already submitted it (attempt: null otherwise), or the answers they
+// already gave if they started it (progress: [] otherwise), to resume.
 router.get('/week', requireSelf((req) => req.query.studentEmail), handle(async (req, res) => {
   const student = readStudent(res, req.query, { emailRequired: false });
   if (!student) return;
@@ -95,16 +110,20 @@ router.get('/week', requireSelf((req) => req.query.studentEmail), handle(async (
 
   const questions = await weekQuestions(ageGroup, weekStart);
   let attempt = null;
+  let progress = [];
   if (email && questions.length) {
     const row = await findAttempt(email, ageGroup, weekStart);
     if (isSubmitted(row)) attempt = attemptResult(row, questions);
+    else if (row) progress = attemptProgress(row, questions);
   }
   res.json({
     weekStart,
+    dueDate: quizDueDate(weekStart),
     ageGroup,
     total: questions.length,
     questions: questions.map(publicQuestion),
     attempt,
+    progress,
   });
 }));
 

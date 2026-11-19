@@ -10,19 +10,19 @@ const { generateWeeklyQuiz, checkQuestion, fillSlots, defaultWeekStart } = requi
 const { createLlm } = require('../../current-affairs/pipeline/llm');
 const { storyRow, auth } = require('./helpers/fixtures');
 
-const WEEK = '2026-11-15'; // a Sunday: stories 9-15 Nov
+const WEEK = '2026-11-15'; // a Sunday: stories 8-14 Nov (the 7 days before it)
 const ENABLED = { CA_PIPELINE_ENABLED: 'true' };
 const CATS = ['india', 'india', 'world', 'world', 'science', 'science', 'economy', 'environment', 'sports', 'society'];
 const TYPES = ['mcq', 'mcq', 'mcq', 'mcq', 'mcq', 'mcq', 'true_false', 'true_false', 'reasoning', 'reasoning'];
 
 // One published story per category in the week, plus ones the quiz must ignore.
 function seedWeek() {
-  const stories = CATS.map((category, i) => storyRow({ n: i, category, status: 'published', publish_date: `2026-11-${String(9 + (i % 7)).padStart(2, '0')}` }));
+  const stories = CATS.map((category, i) => storyRow({ n: i, category, status: 'published', publish_date: `2026-11-${String(8 + (i % 7)).padStart(2, '0')}` }));
   supabase.__seed('ca_stories', [
     ...stories,
     storyRow({ n: 20, status: 'review', publish_date: '2026-11-12' }),     // not published
-    storyRow({ n: 21, status: 'published', publish_date: '2026-11-08' }),  // the week before
-    storyRow({ n: 22, status: 'published', publish_date: '2026-11-16' }),  // after the Sunday
+    storyRow({ n: 21, status: 'published', publish_date: '2026-11-07' }),  // the week before
+    storyRow({ n: 22, status: 'published', publish_date: '2026-11-15' }),  // the quiz's own Sunday: next week's quiz
   ]);
   return stories;
 }
@@ -50,6 +50,7 @@ function fakeAi(answers) {
 beforeEach(() => supabase.__reset());
 
 test('the default week is the upcoming Sunday, or today on a Sunday', () => {
+  expect(defaultWeekStart(new Date('2026-11-14T19:00:00Z'))).toBe('2026-11-15'); // the job: Sunday 00:30 in India
   expect(defaultWeekStart(new Date('2026-11-14T14:30:00Z'))).toBe('2026-11-15'); // Saturday 8 PM in India
   expect(defaultWeekStart(new Date('2026-11-15T05:00:00Z'))).toBe('2026-11-15'); // Sunday
   expect(defaultWeekStart(new Date('2026-11-16T05:00:00Z'))).toBe('2026-11-22'); // Monday
@@ -59,7 +60,7 @@ test('10 questions per age group in the required mix, each tied to a story of th
   const stories = seedWeek();
   const { llm, ask } = fakeAi([]);
   const report = await generateWeeklyQuiz({ supabase, llm, weekStart: WEEK, env: ENABLED });
-  expect(report).toMatchObject({ storiesFrom: '2026-11-09', storiesTo: WEEK, stories: 10, mode: 'write' });
+  expect(report).toMatchObject({ storiesFrom: '2026-11-08', storiesTo: '2026-11-14', stories: 10, mode: 'write' });
   expect(ask).toHaveBeenCalledTimes(2); // one per age group
   const rows = supabase.__rows('ca_quiz_questions');
   const weekIds = new Set(stories.map((s) => s.id));

@@ -261,7 +261,7 @@ describe('quiz question ↔ story link', () => {
     expect(ok.body.warnings).toEqual([]);
     const edited = await send('patch', `/quiz/${ok.body.question.id}`, { story_id: old.id });
     expect(edited.status).toBe(200);
-    expect(edited.body.warnings[0].message).toContain("published on 2026-10-20, outside this quiz's week (2026-11-02 to 2026-11-08)");
+    expect(edited.body.warnings[0].message).toContain("published on 2026-10-20, outside this quiz's week (2026-11-01 to 2026-11-07)");
   });
 });
 
