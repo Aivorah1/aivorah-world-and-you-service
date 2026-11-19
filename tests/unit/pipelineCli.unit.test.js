@@ -40,6 +40,15 @@ describe('dailyRunFailure', () => {
 
   test('a normal run, even one that saved nothing new, is not', () => {
     expect(dailyRunFailure({ selected: { selected: 6 }, saved: 0 })).toBeNull();
+    expect(dailyRunFailure({ selected: { selected: 2 }, saved: 0, skipped: [{ title: 'A', reason: 'already saved (same source link)' }] })).toBeNull();
+  });
+
+  test('stories written but none saved because the database refused them is a failure', () => {
+    const reason = 'save failed: null value in column "title_young" of relation "ca_stories" violates not-null constraint';
+    expect(dailyRunFailure({ selected: { selected: 7 }, written: 7, saved: 0, skipped: [{ title: 'A', reason }, { title: 'B', reason }] }))
+      .toBe(`none of the 2 written stories could be saved: ${reason}`);
+    // Some saved: a partial problem, reported in the run log but not a failed job.
+    expect(dailyRunFailure({ selected: { selected: 7 }, written: 7, saved: 5, skipped: [{ title: 'A', reason }] })).toBeNull();
   });
 });
 
