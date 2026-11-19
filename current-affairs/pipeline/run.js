@@ -39,8 +39,16 @@ function toRow(story, { publishDate, rank }) {
     source: story.source,
     source_url: story.link,
     source_url_hash: story.hash,
-    review_notes: v.result === 'VERIFIED' ? 'AUTO: VERIFIED' : `AUTO: CHECK - ${v.note}`,
+    review_notes: reviewNotes(v, story.alsoReportedBy),
   };
+}
+
+// The check result first (the admin tool reads 'AUTO: VERIFIED' / 'AUTO: CHECK'),
+// then other outlets that reported the same event, for the editor to compare.
+function reviewNotes(verification, alsoReportedBy = []) {
+  const head = verification.result === 'VERIFIED' ? 'AUTO: VERIFIED' : `AUTO: CHECK - ${verification.note}`;
+  const others = (alsoReportedBy || []).map((o) => `${o.source}: ${o.title} (${o.link})`);
+  return others.length ? `${head}\nPossibly the same story elsewhere (check before relying on it): ${others.join('; ')}` : head;
 }
 
 async function saveRows(supabase, rows, report) {
@@ -117,4 +125,4 @@ function daysAhead(env = process.env) {
   return Number.isInteger(n) && n >= 0 && n <= 3 ? n : 1;
 }
 
-module.exports = { runDailyPipeline, toRow, summarize, daysAhead, REVIEW_STATUS };
+module.exports = { runDailyPipeline, toRow, reviewNotes, summarize, daysAhead, REVIEW_STATUS };

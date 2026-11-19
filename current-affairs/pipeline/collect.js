@@ -1,6 +1,6 @@
 // Step 1: read every approved feed, keep the last 24 hours, drop duplicates
 // and anything already saved (any status, rejected included).
-const { FEEDS, PIB_INDEX, fetchText, parseFeed, extractPibFeeds } = require('./feeds');
+const { FEEDS, PIB_RELEASES, fetchText, parseFeed, parsePibReleaseList, extractPibRelease, pibReleaseUrl } = require('./feeds');
 const { urlHash } = require('../services/sourceUrl');
 const { check } = require('../services/db');
 
@@ -9,13 +9,18 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
 function titleTokens(title) {
   return new Set(String(title).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 3));
 }
-function similar(a, b) {
+function overlap(a, b) {
   const A = titleTokens(a); const B = titleTokens(b);
-  if (!A.size || !B.size) return false;
+  if (!A.size || !B.size) return 0;
   let both = 0;
   for (const t of A) if (B.has(t)) both++;
-  return both / (A.size + B.size - both) >= 0.7;
+  return both / (A.size + B.size - both);
 }
+// Near-identical headlines: the same report (only one is kept).
+const similar = (a, b) => overlap(a, b) >= 0.7;
+// Headlines sharing many words: probably the same event in another report.
+const RELATED = 0.28; // chosen on real feeds (19 Nov): catches the same event, not just shared words
+const MAX_SUPPORTING = 3;
 
 async function readFeed(feed, fetchImpl, report) {
   try {
@@ -30,15 +35,28 @@ async function readFeed(feed, fetchImpl, report) {
   }
 }
 
-async function pibFeeds(fetchImpl, report) {
+// Today's PIB releases (English): the list page, then each release page for
+// its posting time and text. A release page that fails is skipped.
+async function pibReleases(fetchImpl, report) {
+  let list;
   try {
-    const links = extractPibFeeds(await fetchText(PIB_INDEX.url, { fetchImpl }));
-    if (!links.length) throw new Error('no RSS links found on the PIB RSS page');
-    return links.map((url) => ({ source: 'PIB', category: 'india', url }));
+    list = parsePibReleaseList(await fetchText(PIB_RELEASES.url, { fetchImpl }));
+    if (!list.length) throw new Error('no releases found on the PIB releases page');
   } catch (err) {
-    report.feedsFailed.push({ source: 'PIB', url: PIB_INDEX.url, reason: `PIB skipped: ${err.message}` });
+    report.feedsFailed.push({ source: 'PIB', url: PIB_RELEASES.url, reason: `PIB skipped: ${err.message}` });
     return [];
   }
+  const items = (await Promise.all(list.map(async ({ prid, title }) => {
+    const link = pibReleaseUrl(prid);
+    try {
+      const { publishedAt, text } = extractPibRelease(await fetchText(link, { fetchImpl }));
+      return { title, link, summary: text.slice(0, 1500), publishedAt, source: 'PIB', feedCategory: PIB_RELEASES.category };
+    } catch {
+      return null;
+    }
+  }))).filter(Boolean);
+  report.feedsRead.push({ source: 'PIB', url: PIB_RELEASES.url, items: items.length });
+  return items;
 }
 
 async function existingHashes(supabase, hashes) {
@@ -52,8 +70,11 @@ async function existingHashes(supabase, hashes) {
 
 async function collect({ supabase, fetchImpl, now = new Date(), feeds = FEEDS } = {}) {
   const report = { feedsRead: [], feedsFailed: [], collected: 0, tooOld: 0, noDate: 0, duplicates: 0, alreadySaved: 0, kept: 0 };
-  const allFeeds = [...feeds, ...(feeds === FEEDS ? await pibFeeds(fetchImpl, report) : [])];
-  const raw = (await Promise.all(allFeeds.map((f) => readFeed(f, fetchImpl, report)))).flat();
+  const [fromFeeds, fromPib] = await Promise.all([
+    Promise.all(feeds.map((f) => readFeed(f, fetchImpl, report))),
+    feeds === FEEDS ? pibReleases(fetchImpl, report) : [],
+  ]);
+  const raw = [...fromFeeds.flat(), ...fromPib];
   report.collected = raw.length;
 
   const since = now.getTime() - WINDOW_MS;
@@ -73,6 +94,15 @@ async function collect({ supabase, fetchImpl, now = new Date(), feeds = FEEDS } 
     unique.push({ ...item, hash });
   }
 
+  // Other outlets reporting the same event (for the editor to check against;
+  // never used as a source of facts by the AI).
+  for (const item of unique) {
+    item.alsoReportedBy = fresh
+      .filter((o) => o.source !== item.source && o.link !== item.link && overlap(o.title, item.title) >= RELATED)
+      .slice(0, MAX_SUPPORTING)
+      .map((o) => ({ source: o.source, title: o.title, link: o.link }));
+  }
+
   const saved = unique.length ? await existingHashes(supabase, unique.map((i) => i.hash)) : new Set();
   const items = unique.filter((i) => {
     if (saved.has(i.hash)) { report.alreadySaved++; return false; }
@@ -82,4 +112,4 @@ async function collect({ supabase, fetchImpl, now = new Date(), feeds = FEEDS } 
   return { items, report };
 }
 
-module.exports = { collect, similar, WINDOW_MS };
+module.exports = { collect, similar, overlap, RELATED, WINDOW_MS };

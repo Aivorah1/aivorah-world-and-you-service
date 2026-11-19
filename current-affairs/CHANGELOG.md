@@ -1,5 +1,26 @@
 # CHANGELOG — Current Affairs Module
 
+## 2026-11-19 — Rewrite from source, supporting reports, PIB, environment, no overwrites
+
+- **Rewrite from source** (`POST /admin/stories/:id/regenerate { request? }`):
+  the AI rewrites both age versions from the story's source page, following
+  the editor's optional request only where it agrees with the source, and
+  re-checks the key facts. Saved for review only (`AUTO: REGENERATED - …`);
+  stories that are published (unpublish first), rejected or archived are
+  refused. Recorded in the history as `story.regenerate`.
+- **Supporting reports.** Other outlets with a headline about the same event
+  are listed under the check note ("Possibly the same story elsewhere"), for
+  the editor to compare. They are never used as facts by the AI. The match is
+  on headline words (threshold 0.28, chosen on the real feeds of 19 Nov).
+- **PIB works again.** Its RSS feeds give Hindi headlines without dates, so
+  nothing from PIB was ever used. PIB now comes from its English "All
+  releases" page; each release page gives the posting time (India time) and
+  the text, which the fact check can now read (before: 38 characters).
+- **Environment news.** The Hindu (Energy & Environment) and Mongabay India
+  feeds were added (19 Nov: 0 environment stories before, 10 after).
+- **No silent overwrites.** `PATCH /admin/stories/:id` with the `updated_at`
+  the editor loaded is refused (409) if someone else changed the story since.
+
 ## 2026-11-19 — Editorial approval: tomorrow's digest, approve all, schedule, history
 
 - **The pipeline prepares tomorrow's digest.** Stories it collects are dated
