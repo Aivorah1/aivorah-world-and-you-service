@@ -2,6 +2,7 @@
 // reviewed, edited, written and published; analytics come from the activity tables.
 jest.mock('../../services/supabase', () => require('./helpers/fakeSupabase').createFakeSupabase());
 jest.mock('../../services/firebaseAdmin', () => require('./helpers/fakeFirebase'));
+jest.mock('../../current-affairs/pipeline/regenerate', () => ({ regenerateStory: jest.fn() }));
 // index.js also loads World & You's AI routes, which create a Groq client on load.
 jest.mock('../../services/dailyTidbit', () => ({}));
 jest.mock('../../services/world', () => ({}));
@@ -420,5 +421,63 @@ describe('approval history', () => {
     expect(err.mock.calls.some((c) => String(c[0]).includes('[ca-audit] NOT RECORDED'))).toBe(true);
     expect((await get(`/stories/${row.id}/history`)).body).toEqual({ available: false, entries: [] });
     err.mockRestore();
+  });
+});
+
+describe('rewrite from source (regenerate)', () => {
+  const { regenerateStory } = require('../../current-affairs/pipeline/regenerate');
+  const NEW = {
+    title_kid: 'New kid title', summary_kid: 'S', what_happened_kid: 'W', why_important_kid: 'Y',
+    title_teen: 'New teen title', summary_teen: 'S', what_happened_teen: 'W', why_important_teen: 'Y',
+    did_you_know: null, new_word_1: 'Orbit', def_1: 'A path.', new_word_2: null, def_2: null, new_word_3: null, def_3: null, think_about_it: 'Why?',
+  };
+  beforeEach(() => regenerateStory.mockReset());
+
+  test('saves the rewrite for review only, notes the check, and records who asked', async () => {
+    const row = storyRow({ status: 'draft', updated_at: '2026-11-09T05:00:00.000Z', title_kid: 'Old kid title' });
+    supabase.__seed('ca_stories', [row]);
+    regenerateStory.mockResolvedValue({ fields: NEW, verification: { result: 'VERIFIED', note: 'ok' } });
+    const res = await send('post', `/stories/${row.id}/regenerate`, { request: 'Simpler words' });
+    expect(res.status).toBe(200);
+    expect(res.body.story).toMatchObject({ title_kid: 'New kid title', status: 'review', is_true_fact: false, review_notes: 'AUTO: REGENERATED - VERIFIED' });
+    expect(regenerateStory.mock.calls[0][0]).toMatchObject({ request: 'Simpler words', story: expect.objectContaining({ id: row.id }) });
+    const [h] = supabase.__rows('ca_audit_log');
+    expect(h).toMatchObject({ actor: EDITOR, action: 'story.regenerate', before: expect.objectContaining({ title_kid: 'Old kid title' }) });
+    expect(h.detail).toMatch(/Simpler words/);
+  });
+
+  test('published, rejected and missing stories are refused; AI failures are passed on', async () => {
+    const live = storyRow({ n: 1, status: 'published' });
+    const gone = storyRow({ n: 2, status: 'rejected' });
+    const ok = storyRow({ n: 3, status: 'review' });
+    supabase.__seed('ca_stories', [live, gone, ok]);
+    expect((await send('post', `/stories/${live.id}/regenerate`, {})).body.error).toMatch(/Unpublish it/);
+    expect((await send('post', `/stories/${gone.id}/regenerate`, {})).status).toBe(409);
+    expect((await send('post', '/stories/00000000-0000-4000-8000-000000000000/regenerate', {})).status).toBe(404);
+    expect((await send('post', `/stories/${ok.id}/regenerate`, { request: 'x'.repeat(501) })).status).toBe(400);
+    regenerateStory.mockResolvedValue({ error: 'The source page could not be read' });
+    const failed = await send('post', `/stories/${ok.id}/regenerate`, {});
+    expect([failed.status, failed.body.error]).toEqual([502, 'The source page could not be read']);
+    expect(supabase.__rows('ca_audit_log')).toHaveLength(0);
+    expect((await send('post', `/stories/${ok.id}/regenerate`, {}, 'kid@school.in')).status).toBe(403);
+  });
+});
+
+describe('two editors on one story', () => {
+  test('a save based on an older copy is refused; the newer edit is kept', async () => {
+    const row = storyRow({ status: 'review', title_kid: 'Original', updated_at: '2026-11-09T05:00:00.000Z' });
+    supabase.__seed('ca_stories', [row]);
+    // Editor A saves (the database moves updated_at on every change).
+    const a = await send('patch', `/stories/${row.id}`, { title_kid: 'From A', updated_at: '2026-11-09T05:00:00.000Z' });
+    expect(a.status).toBe(200);
+    supabase.__rows('ca_stories')[0].updated_at = '2026-11-09T05:10:00.000Z';
+    // Editor B opened it before A saved.
+    const b = await send('patch', `/stories/${row.id}`, { title_kid: 'From B', updated_at: '2026-11-09T05:00:00.000Z' });
+    expect(b.status).toBe(409);
+    expect(b.body.error).toMatch(/edited by someone else/);
+    expect(supabase.__rows('ca_stories')[0].title_kid).toBe('From A');
+    // The same moment written differently still counts as the same copy.
+    const c = await send('patch', `/stories/${row.id}`, { title_kid: 'From C', updated_at: '2026-11-09T05:10:00+00:00' });
+    expect(c.status).toBe(200);
   });
 });

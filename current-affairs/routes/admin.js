@@ -10,6 +10,7 @@ const { AGE_GROUPS, normalizeAgeGroup, localDate, isDateString, addDays, quizWee
 const { urlHash, isHttpsUrl } = require('../services/sourceUrl');
 const { computeMetrics, daysBetween } = require('../services/analytics');
 const audit = require('../services/audit');
+const { regenerateStory } = require('../pipeline/regenerate');
 
 const router = express.Router();
 router.use(requireEditor);
@@ -194,8 +195,15 @@ router.patch('/stories/:id', handle(async (req, res) => {
     ? check(await supabase.from('ca_stories').select('*').eq('id', req.params.id).maybeSingle())
     : null;
   if (!existing) return res.status(404).json({ error: 'Story not found' });
-  const rows = check(await supabase.from('ca_stories').update(patch).eq('id', req.params.id).select('*'));
-  if (!rows?.length) return res.status(404).json({ error: 'Story not found' });
+  // Two editors on one story: the admin tool sends the updated_at it loaded
+  // (the database sets updated_at on every change). If the story changed since,
+  // nothing is saved, so one editor never silently overwrites the other.
+  const loaded = req.body?.updated_at;
+  if (loaded && !sameTime(loaded, existing.updated_at)) return res.status(409).json({ error: EDITED_ELSEWHERE });
+  let update = supabase.from('ca_stories').update(patch).eq('id', req.params.id);
+  if (loaded && existing.updated_at) update = update.eq('updated_at', existing.updated_at);
+  const rows = check(await update.select('*'));
+  if (!rows?.length) return loaded ? res.status(409).json({ error: EDITED_ELSEWHERE }) : res.status(404).json({ error: 'Story not found' });
   // The editor's text is kept in the story itself; the history keeps what it replaced.
   const diff = audit.changedFields(existing, rows[0], Object.keys(patch).filter((f) => f !== 'source_url_hash'));
   if (diff.changed.length) {
@@ -204,6 +212,51 @@ router.patch('/stories/:id', handle(async (req, res) => {
       before: diff.before, after: diff.after, detail: `Edited: ${diff.changed.join(', ')}`,
     });
   }
+  res.json({ story: rows[0], warnings: lengthWarnings(rows[0]) });
+}));
+
+const EDITED_ELSEWHERE = 'This story was edited by someone else after you opened it. Reload to see their changes, then try again.';
+// Same moment? (the same timestamp can come back with different formatting)
+function sameTime(a, b) {
+  if (String(a) === String(b)) return true;
+  const ta = Date.parse(a); const tb = Date.parse(b);
+  return Number.isFinite(ta) && ta === tb;
+}
+
+// POST /admin/stories/:id/regenerate { request? } — "Rewrite from source".
+// Rewrites both age versions from the story's source page (with the editor's
+// optional request), re-checks the key facts, and saves the new text for
+// review: it is never published here. Only stories still in review or drafts.
+const REGENERATE_FROM = ['review', 'draft'];
+router.post('/stories/:id/regenerate', handle(async (req, res) => {
+  if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Story not found' });
+  const request = text(req.body?.request) || '';
+  if (request.length > 500) return bad(res, 'Keep the request under 500 characters');
+  const story = check(await supabase.from('ca_stories').select('*').eq('id', req.params.id).maybeSingle());
+  if (!story) return res.status(404).json({ error: 'Story not found' });
+  if (!REGENERATE_FROM.includes(story.status)) {
+    return res.status(409).json({ error: story.status === 'published'
+      ? 'This story is published. Unpublish it (back to review) before rewriting it.'
+      : `A ${story.status} story cannot be rewritten.` });
+  }
+
+  const result = await regenerateStory({ story, request });
+  if (result.error) return res.status(502).json({ error: result.error });
+
+  const v = result.verification;
+  const notes = `AUTO: REGENERATED - ${v.result === 'VERIFIED' ? 'VERIFIED' : `CHECK - ${v.note}`}`;
+  const patch = { ...result.fields, review_notes: notes, status: 'review', is_true_fact: false };
+  // Only if nobody changed it while the AI was writing (that can take a while).
+  const rows = check(await supabase.from('ca_stories').update(patch)
+    .eq('id', story.id).in('status', REGENERATE_FROM).eq('updated_at', story.updated_at).select('*'));
+  if (!rows?.length) return res.status(409).json({ error: 'The story changed while it was being rewritten. Reload and try again.' });
+
+  const diff = audit.changedFields(story, rows[0], Object.keys(result.fields));
+  await audit.record({
+    actor: req.editorEmail, action: 'story.regenerate', entityType: 'story', entityId: story.id,
+    before: diff.before, after: diff.after,
+    detail: `Rewritten from the source by the AI on request${request ? ` ("${request.slice(0, 200)}")` : ''}; fact check: ${v.result}`,
+  });
   res.json({ story: rows[0], warnings: lengthWarnings(rows[0]) });
 }));
 
@@ -261,7 +314,7 @@ router.get('/pipeline/last-run', handle(async (req, res) => {
   if (!auto.length) return res.json({ lastRun: null });
   const day = auto[0].publish_date;
   const sameDay = auto.filter((r) => r.publish_date === day);
-  res.json({ lastRun: { at: auto[0].created_at, date: day, saved: sameDay.length, verified: sameDay.filter((r) => r.review_notes === 'AUTO: VERIFIED').length } });
+  res.json({ lastRun: { at: auto[0].created_at, date: day, saved: sameDay.length, verified: sameDay.filter((r) => String(r.review_notes || '').startsWith('AUTO: VERIFIED')).length } });
 }));
 
 // POST /admin/stories/:id/status { status: 'published' | 'rejected' | 'review' | 'archived' | 'draft' }

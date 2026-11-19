@@ -1,6 +1,6 @@
 // Step 3: read each chosen story's source page and let the AI check the key
 // facts against it (PROMPT B). Page text is never logged or stored.
-const { fetchText, stripHtml } = require('./feeds');
+const { fetchText, stripHtml, isPibUrl, extractPibRelease } = require('./feeds');
 
 const MIN_PAGE_CHARS = 300;
 const MAX_PAGE_CHARS = 8000;
@@ -17,9 +17,14 @@ function extractPageText(html) {
   return text.slice(0, MAX_PAGE_CHARS);
 }
 
+// The readable text of a source page (PIB release pages need their own reader).
+function pageTextFor(url, html) {
+  return isPibUrl(url) ? extractPibRelease(html).text : extractPageText(html);
+}
+
 async function verifyOne(pick, llm, fetchImpl) {
   let pageText = '';
-  try { pageText = extractPageText(await fetchText(pick.link, { fetchImpl })); } catch { pageText = ''; }
+  try { pageText = pageTextFor(pick.link, await fetchText(pick.link, { fetchImpl })); } catch { pageText = ''; }
   if (pageText.length < MIN_PAGE_CHARS) {
     return { result: 'UNCLEAR', note: 'Source page could not be read, please open the link.', pageText: '' };
   }
@@ -49,4 +54,4 @@ async function verify(picks, llm, { fetchImpl } = {}) {
   return { kept, report };
 }
 
-module.exports = { verify, extractPageText, PROMPT_B, MIN_PAGE_CHARS };
+module.exports = { verify, verifyOne, extractPageText, pageTextFor, PROMPT_B, MIN_PAGE_CHARS };

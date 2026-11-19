@@ -12,7 +12,9 @@ const { verify, extractPageText } = require('../../current-affairs/pipeline/veri
 const { write, checkWritten } = require('../../current-affairs/pipeline/write');
 const { runDailyPipeline } = require('../../current-affairs/pipeline/run');
 const { createLlm } = require('../../current-affairs/pipeline/llm');
-const { FEEDS, PIB_INDEX } = require('../../current-affairs/pipeline/feeds');
+const { FEEDS, PIB_RELEASES, pibReleaseUrl, parsePibReleaseList, extractPibRelease } = require('../../current-affairs/pipeline/feeds');
+const { regenerateStory } = require('../../current-affairs/pipeline/regenerate');
+const { reviewNotes } = require('../../current-affairs/pipeline/run');
 const { urlHash } = require('../../current-affairs/services/sourceUrl');
 const { toStory } = require('../../current-affairs/services/content');
 const { storyRow } = require('./helpers/fixtures');
@@ -66,6 +68,14 @@ function goodStory(over = {}) {
 
 const ONE_FEED = [{ source: 'The Hindu', category: 'india', url: 'https://feeds.test/india.rss' }];
 
+// A PIB release page as PIB serves it: the text between "Posted On" and "(Release ID)".
+const pibPage = (prid, posted, body = `${words(40, 'fact')} The Union Cabinet approved a new rail line linking two states, the release said.`) =>
+  `<html><head><title>Press Release:Press Information Bureau</title><header><nav>Home</nav><div><p>Menu</p></div></header></head><body>
+  <div class="innner-page-main-about-us-content-right-part"><div>Posted On: ${posted} by PIB Delhi</div><p>${body}</p>
+  <p>**** AB/CD (Release ID: ${prid}) Visitor Counter : 12</p></div></body></html>`;
+const PIB_LIST = (rows) => `<ul>${rows.map(([prid, title]) => `<li><a href="PressReleasePage.aspx?PRID=${prid}">${title}</a></li>`).join('')}</ul>`;
+
+
 beforeEach(() => supabase.__reset());
 
 describe('collect', () => {
@@ -113,21 +123,67 @@ describe('collect', () => {
     expect(report.alreadySaved).toBe(1);
   });
 
-  test('PIB feeds are read from its RSS page; if none are found PIB is skipped and reported', async () => {
-    const PIB_FEED = 'https://www.pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3';
+  test("PIB: today's English releases from its releases page, dated from each release page (India time)", async () => {
     const pages = {
-      [PIB_INDEX.url]: { body: '<a href="RssMain.aspx?ModId=6&amp;Lang=1&amp;Regid=3">Releases</a>' },
-      [PIB_FEED]: { body: rss([{ title: 'Cabinet approves new rail line', link: 'https://pib.gov.in/PressRelease.aspx?PRID=1', date: hoursAgo(3) }]) },
+      [PIB_RELEASES.url]: { body: PIB_LIST([['2001', '\u200B\u200BCabinet approves new rail line'], ['2002', 'Old release'], ['2003', 'Broken page']]) },
+      // 15 NOV 2026 7:00AM India = 01:30 UTC, 1.5 h before NOW; 2 NOV is far too old.
+      [pibReleaseUrl('2001')]: { body: pibPage('2001', '15 NOV 2026 7:00AM') },
+      [pibReleaseUrl('2002')]: { body: pibPage('2002', '02 NOV 2026 4:24PM') },
+      [pibReleaseUrl('2003')]: { throws: 'socket hang up' },
     };
-    const withPib = await collect({ supabase, fetchImpl: fetchFrom(pages), now: NOW });
-    expect(withPib.items.find((i) => i.source === 'PIB')).toMatchObject({ title: 'Cabinet approves new rail line', feedCategory: 'india' });
-    // A feed with no dates is skipped and reported (PIB sends none today).
-    pages[PIB_FEED] = { body: '<rss><channel><item><title>No date here</title><link>https://pib.gov.in/x</link></item></channel></rss>' };
-    const undated = await collect({ supabase, fetchImpl: fetchFrom(pages), now: NOW });
-    expect(undated.report.feedsFailed.find((f) => f.url === PIB_FEED).reason).toBe('no publish dates in the feed');
+    const { items, report } = await collect({ supabase, fetchImpl: fetchFrom(pages), now: NOW });
+    const pib = items.filter((i) => i.source === 'PIB');
+    expect(pib).toHaveLength(1);
+    expect(pib[0]).toMatchObject({ title: 'Cabinet approves new rail line', feedCategory: 'india', link: pibReleaseUrl('2001'), publishedAt: '2026-11-15T01:30:00.000Z' });
+    expect(pib[0].summary).toMatch(/^fact0 .*rail line/);
+    expect(report.feedsRead.find((f) => f.source === 'PIB')).toMatchObject({ items: 2 }); // the broken page is skipped
+    expect(report.tooOld).toBeGreaterThanOrEqual(1);
+
     const noPib = await collect({ supabase, fetchImpl: fetchFrom({}), now: NOW });
     expect(noPib.report.feedsFailed.find((f) => f.source === 'PIB').reason).toMatch(/^PIB skipped/);
     expect(noPib.report.feedsFailed).toHaveLength(FEEDS.length + 1);
+  });
+
+  test('PIB parsing: list ids newest first without repeats; release time and text', () => {
+    expect(parsePibReleaseList(PIB_LIST([['10', 'A'], ['12', 'B'], ['10', 'A again'], ['11', '']]))).toEqual([{ prid: '12', title: 'B' }, { prid: '10', title: 'A' }]);
+    const r = extractPibRelease(pibPage('9', '19 NOV 2026 4:24PM', 'Prime Minister will open a forum.'));
+    expect(r).toEqual({ publishedAt: '2026-11-19T10:54:00.000Z', text: 'Prime Minister will open a forum. **** AB/CD' });
+    expect(extractPibRelease('<p>No date</p>').publishedAt).toBeNull();
+    expect(extractPibRelease(pibPage('9', '01 DEC 2026 12:05AM')).publishedAt).toBe('2026-11-30T18:35:00.000Z'); // 12 AM = midnight
+  });
+
+  test('other outlets reporting the same event are kept as supporting reports, not as duplicates', async () => {
+    const feeds = [ONE_FEED[0], { source: 'UN News', category: 'world', url: 'https://feeds.test/world.rss' }];
+    const pages = {
+      [feeds[0].url]: { body: rss([{ title: 'Union Minister Gadkari calls for alternative fuel use in transport', link: 'https://news.test/hindu-fuel', date: hoursAgo(2) }]) },
+      [feeds[1].url]: { body: rss([
+        { title: 'Minister Nitin Gadkari calls for greater alternative fuel adoption', link: 'https://un.test/fuel', date: hoursAgo(3) },
+        { title: 'Monsoon rainfall report released for the season', link: 'https://un.test/rain', date: hoursAgo(1) },
+      ]) },
+    };
+    const { items } = await collect({ supabase, fetchImpl: fetchFrom(pages), now: NOW, feeds });
+    expect(items).toHaveLength(3); // nothing dropped
+    const hindu = items.find((i) => i.link === 'https://news.test/hindu-fuel');
+    expect(hindu.alsoReportedBy).toEqual([{ source: 'UN News', title: 'Minister Nitin Gadkari calls for greater alternative fuel adoption', link: 'https://un.test/fuel' }]);
+    expect(items.find((i) => i.link === 'https://un.test/rain').alsoReportedBy).toEqual([]);
+  });
+});
+
+describe('review notes', () => {
+  test('the check result first, then possible supporting reports for the editor', () => {
+    expect(reviewNotes({ result: 'VERIFIED' })).toBe('AUTO: VERIFIED');
+    expect(reviewNotes({ result: 'UNCLEAR', note: 'Check the date.' }, [{ source: 'PIB', title: 'Rail line', link: 'https://pib.gov.in/x' }]))
+      .toBe('AUTO: CHECK - Check the date.\nPossibly the same story elsewhere (check before relying on it): PIB: Rail line (https://pib.gov.in/x)');
+  });
+});
+
+describe('verify reads PIB release pages', () => {
+  test('the release text is checked (the generic reader cannot see it)', async () => {
+    const link = pibReleaseUrl('2001');
+    const { llm, ask } = fakeAi({ verdicts: [{ result: 'VERIFIED', note: 'ok' }] });
+    const { kept } = await verify([{ title: 'Rail', link, keyFacts: ['A rail line was approved'] }], llm, { fetchImpl: fetchFrom({ [link]: { body: pibPage('2001', '15 NOV 2026 7:00AM') } }) });
+    expect(kept[0].verification.result).toBe('VERIFIED');
+    expect(ask.mock.calls[0][0]).toMatch(/The Union Cabinet approved a new rail line/);
   });
 });
 
@@ -333,5 +389,35 @@ describe('POST /current-affairs/pipeline/run', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('[ca-pipeline] r 2026-11-15'));
     spy.mockRestore();
     log.mockRestore();
+  });
+});
+
+describe('regenerateStory', () => {
+  const SOURCE = 'https://www.thehindu.com/a';
+  const story = (over = {}) => storyRow({ status: 'review', source_url: SOURCE, title_teen: 'A national library plan', summary_teen: 'Each district gets a library.', ...over });
+
+  test('rewrites both versions from the source page, with the editor request, and re-checks the facts', async () => {
+    const { llm, ask } = fakeAi({ verdicts: [{ result: 'UNCLEAR', note: 'Check the number of districts.' }] });
+    const out = await regenerateStory({ story: story(), request: 'Make the 7-12 version simpler', llm, fetchImpl: fetchFrom({ [SOURCE]: { body: ARTICLE } }) });
+    expect(out.error).toBeUndefined();
+    expect(out.fields).toMatchObject({ title_kid: 'Libraries for every district', title_teen: 'A national library plan', new_word_1: 'Library', think_about_it: 'Which book would you borrow first?' });
+    expect(out.verification).toEqual({ result: 'UNCLEAR', note: 'Check the number of districts.' });
+    const writePrompt = ask.mock.calls.find((c) => c[1].step === 'write')[0];
+    expect(writePrompt).toMatch(/EDITOR'S REQUEST[\s\S]*Make the 7-12 version simpler/);
+    expect(writePrompt).toMatch(/school library plan/); // the source text, not only the old summary
+  });
+
+  test('no source link, or a page that cannot be read: nothing is written', async () => {
+    const { llm, ask } = fakeAi();
+    expect((await regenerateStory({ story: story({ source_url: null }), llm })).error).toMatch(/no source link/);
+    expect((await regenerateStory({ story: story(), llm, fetchImpl: fetchFrom({}) })).error).toMatch(/could not be read/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  test('an unusable AI answer is reported, not saved', async () => {
+    const bad = { v712: { title: 'x' } };
+    const { llm } = fakeAi({ writes: [bad, bad] });
+    const out = await regenerateStory({ story: story(), llm, fetchImpl: fetchFrom({ [SOURCE]: { body: ARTICLE } }) });
+    expect(out.error).toMatch(/could not rewrite it/);
   });
 });

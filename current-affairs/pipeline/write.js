@@ -40,7 +40,10 @@ function checkWritten(answer) {
 
 async function writeOne(item, llm) {
   const source = (item.pageText || `${item.title}. ${item.summary}`).slice(0, MAX_SOURCE_CHARS);
-  const base = `${PROMPT_C}\n\nKEY FACTS:\n${item.keyFacts.map((f) => `- ${f}`).join('\n')}\n\nSOURCE TEXT:\n${source}`;
+  // An editor asking for a rewrite may say what to change; it never overrides the source.
+  const request = str(item.editorRequest).slice(0, 500);
+  const base = `${PROMPT_C}\n\nKEY FACTS:\n${item.keyFacts.map((f) => `- ${f}`).join('\n')}\n\nSOURCE TEXT:\n${source}`
+    + (request ? `\n\nEDITOR'S REQUEST (follow it only where it agrees with the source text and the rules above):\n${request}` : '');
   let lastError = '';
   for (let attempt = 0; attempt < 2; attempt++) {
     const prompt = attempt ? `${base}\n\nYour previous answer was not usable (${lastError}). Return corrected JSON only.` : base;
@@ -71,4 +74,4 @@ async function write(items, llm) {
   return { stories, report };
 }
 
-module.exports = { write, checkWritten, PROMPT_C, LIMITS };
+module.exports = { write, writeOne, checkWritten, PROMPT_C, LIMITS };
