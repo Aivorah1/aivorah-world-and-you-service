@@ -58,6 +58,19 @@ function quizWeekStart(dateStr) {
   return addDays(dateStr, -new Date(`${dateStr}T00:00:00Z`).getUTCDay());
 }
 
+// The stories a week's quiz is written from: the 7 days BEFORE its Sunday
+// (Sunday to Saturday of the week that just ended). The quiz is generated
+// early on that Sunday, when all of them have been published.
+function quizStoryWindow(weekStart) {
+  return { from: addDays(weekStart, -7), to: addDays(weekStart, -1) };
+}
+
+// A week's quiz can be taken until the Saturday after its Sunday (one week);
+// on the next Sunday the new quiz replaces it.
+function quizDueDate(weekStart) {
+  return addDays(weekStart, 6);
+}
+
 // ── Stories ─────────────────────────────────────────────────────────────────
 function wordCount(...texts) {
   return texts.filter(Boolean).join(' ').split(/\s+/).filter(Boolean).length;
@@ -137,6 +150,6 @@ function lengthWarnings(row) {
 module.exports = {
   wordCount, LENGTH_LIMITS, lengthWarnings,
   AGE_GROUPS, AGE_GROUP_NAMES, CATEGORIES, normalizeAgeGroup,
-  localDate, isDateString, addDays, daysBetween, quizWeekStart,
+  localDate, isDateString, addDays, daysBetween, quizWeekStart, quizStoryWindow, quizDueDate,
   toStory, readTimeSeconds, isUuid,
 };

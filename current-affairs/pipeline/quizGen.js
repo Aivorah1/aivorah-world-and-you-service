@@ -1,10 +1,10 @@
-// Weekly quiz generator. For the quiz of week_start S (a Sunday) it uses only
-// PUBLISHED stories with publish_date from S-6 to S (the 7 days ending on
-// that Sunday) and writes up to 10 questions per age group (prompt D), each
+// Weekly quiz generator. Runs early every Sunday. For the quiz of week_start S
+// (a Sunday) it uses only PUBLISHED stories with publish_date from S-7 to S-1
+// (the 7 days before that Sunday: the week that just ended) and writes up to 10 questions per age group (prompt D), each
 // tied to the story it comes from. Saved with status 'review': an editor
 // publishes the week in the admin tool (/admin/quiz/publish). Never published here.
 const crypto = require('crypto');
-const { AGE_GROUPS, CATEGORIES, localDate, addDays, quizWeekStart } = require('../services/content');
+const { AGE_GROUPS, CATEGORIES, localDate, addDays, quizWeekStart, quizStoryWindow } = require('../services/content');
 const { CATEGORY_SLOTS, QUIZ_SIZE } = require('../services/quiz');
 const { check } = require('../services/db');
 const { createLlm } = require('./llm');
@@ -113,17 +113,17 @@ async function generateWeeklyQuiz({ supabase, llm = createLlm(), weekStart, forc
   const runId = crypto.randomUUID();
   const week = weekStart || defaultWeekStart(now);
   if (quizWeekStart(week) !== week) throw new Error('weekStart must be a Sunday (YYYY-MM-DD)');
-  const from = addDays(week, -6);
+  const { from, to } = quizStoryWindow(week);
   const writesEnabled = !dryRun && String(env.CA_PIPELINE_ENABLED || '').toLowerCase() === 'true';
   const report = {
-    runId, weekStart: week, storiesFrom: from, storiesTo: week, mode: writesEnabled ? 'write' : 'dry-run',
-    rule: `Published stories with publish_date ${from} to ${week} (the 7 days ending on the quiz's Sunday).`,
+    runId, weekStart: week, storiesFrom: from, storiesTo: to, mode: writesEnabled ? 'write' : 'dry-run',
+    rule: `Published stories with publish_date ${from} to ${to} (the 7 days before the quiz's Sunday).`,
     stories: 0, ageGroups: {}, rows: [],
   };
 
   const stories = check(await supabase.from('ca_stories')
     .select('id, category, publish_date, title_kid, what_happened_kid, why_important_kid, title_teen, what_happened_teen, why_important_teen, did_you_know')
-    .eq('status', 'published').gte('publish_date', from).lte('publish_date', week)
+    .eq('status', 'published').gte('publish_date', from).lte('publish_date', to)
     .order('publish_date', { ascending: true }).order('priority', { ascending: false }).limit(60)) || [];
   report.stories = stories.length;
   if (stories.length < 5) report.note = `Only ${stories.length} published stories this week: questions only for what they support.`;
