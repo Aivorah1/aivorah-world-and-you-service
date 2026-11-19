@@ -9,6 +9,7 @@ const { handle } = require('./helpers');
 const { AGE_GROUPS, normalizeAgeGroup, localDate, isDateString, addDays, quizWeekStart, lengthWarnings, isUuid } = require('../services/content');
 const { urlHash, isHttpsUrl } = require('../services/sourceUrl');
 const { computeMetrics, daysBetween } = require('../services/analytics');
+const audit = require('../services/audit');
 
 const router = express.Router();
 router.use(requireEditor);
@@ -73,10 +74,26 @@ const ALLOWED_FROM = {
   archived: STATUSES,
 };
 
-// Moves one story/question to `status` only if its current status allows it.
-// Answers 404 / 409 itself and returns null, or returns the updated row.
-async function changeStatus(res, table, id, status, stamp, label) {
-  const current = check(await supabase.from(table).select('status').eq('id', id).maybeSingle());
+// What a story's approval means for students, for the history and the editor.
+function scheduleNote(publishDate, today = localDate()) {
+  if (!publishDate) return '';
+  if (publishDate > today) return `scheduled: students see it on ${publishDate}`;
+  if (publishDate === today) return 'live today';
+  return `dated ${publishDate}`;
+}
+
+// A story can only be approved for today or a later day: the digest shows a
+// day's approved stories on that day only, so a past date would never be seen.
+const pastDateError = (date) => `This story is dated ${date}, which has passed. Set its publish date to today or later, then approve it.`;
+
+const ENTITY = { ca_stories: 'story', ca_quiz_questions: 'quiz_question' };
+
+// Moves one story/question to `status` only if its current status allows it,
+// and records the change in the approval history. Answers 400/404/409 itself
+// and returns null, or returns the updated row.
+async function changeStatus(req, res, table, id, status, stamp, label) {
+  const isStory = table === 'ca_stories';
+  const current = check(await supabase.from(table).select(isStory ? 'status, publish_date' : 'status').eq('id', id).maybeSingle());
   if (!current) { res.status(404).json({ error: `${label} not found` }); return null; }
   const from = ALLOWED_FROM[status];
   if (!from.includes(current.status)) {
@@ -87,10 +104,24 @@ async function changeStatus(res, table, id, status, stamp, label) {
     });
     return null;
   }
+  if (isStory && status === 'published' && current.status !== 'published' && current.publish_date < localDate()) {
+    res.status(400).json({ error: pastDateError(current.publish_date) });
+    return null;
+  }
   // .in('status', from) again: the status cannot change in between.
   const rows = check(await supabase.from(table).update(stamp).eq('id', id).in('status', from).select('*'));
   if (!rows?.length) { res.status(409).json({ error: `The ${label.toLowerCase()} changed while saving. Reload and try again.` }); return null; }
-  return rows[0];
+  const row = rows[0];
+  await audit.record({
+    actor: req.editorEmail,
+    action: `${ENTITY[table]}.${status}`,
+    entityType: ENTITY[table],
+    entityId: id,
+    before: isStory ? { status: current.status, publish_date: current.publish_date } : { status: current.status },
+    after: isStory ? { status: row.status, publish_date: row.publish_date } : { status: row.status },
+    detail: isStory && status === 'published' ? `Approved, ${scheduleNote(row.publish_date)}` : null,
+  });
+  return row;
 }
 
 const reviewStamp = (req, status) => ({
@@ -126,6 +157,13 @@ router.get('/stories/:id', handle(async (req, res) => {
   res.json({ story: row });
 }));
 
+// GET /admin/stories/:id/history: every recorded change, newest first.
+// { available: false } until the history table (aivorah-db 0029) exists.
+router.get('/stories/:id/history', handle(async (req, res) => {
+  if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Story not found' });
+  res.json(await audit.historyFor('story', req.params.id));
+}));
+
 // POST /admin/stories — write a new story. { ...fields, publish: true } publishes it.
 router.post('/stories', handle(async (req, res) => {
   const { patch, error } = storyPatch(req.body || {}, { creating: true });
@@ -136,8 +174,15 @@ router.post('/stories', handle(async (req, res) => {
     age_extras: patch.age_extras || {},
     ...(req.body.publish ? reviewStamp(req, 'published') : { status: 'draft', is_true_fact: false }),
   };
+  if (req.body.publish && row.publish_date < localDate()) return bad(res, pastDateError(row.publish_date));
   const saved = check(await supabase.from('ca_stories').insert(row).select('*'));
-  res.status(201).json({ story: Array.isArray(saved) ? saved[0] : saved, warnings: lengthWarnings(row) });
+  const story = Array.isArray(saved) ? saved[0] : saved;
+  await audit.record({
+    actor: req.editorEmail, action: req.body.publish ? 'story.create_published' : 'story.create', entityType: 'story', entityId: story?.id,
+    after: { status: story?.status, publish_date: story?.publish_date },
+    detail: req.body.publish ? `Written and approved by an editor, ${scheduleNote(story?.publish_date)}` : 'Written by an editor as a draft',
+  });
+  res.status(201).json({ story, warnings: lengthWarnings(row) });
 }));
 
 // PATCH /admin/stories/:id — edit any text, the date, priority or source.
@@ -145,30 +190,66 @@ router.patch('/stories/:id', handle(async (req, res) => {
   const { patch, error } = storyPatch(req.body || {}, { creating: false });
   if (error) return bad(res, error);
   if (!Object.keys(patch).length) return bad(res, 'Nothing to change');
+  const existing = isUuid(req.params.id)
+    ? check(await supabase.from('ca_stories').select('*').eq('id', req.params.id).maybeSingle())
+    : null;
+  if (!existing) return res.status(404).json({ error: 'Story not found' });
   const rows = check(await supabase.from('ca_stories').update(patch).eq('id', req.params.id).select('*'));
   if (!rows?.length) return res.status(404).json({ error: 'Story not found' });
+  // The editor's text is kept in the story itself; the history keeps what it replaced.
+  const diff = audit.changedFields(existing, rows[0], Object.keys(patch).filter((f) => f !== 'source_url_hash'));
+  if (diff.changed.length) {
+    await audit.record({
+      actor: req.editorEmail, action: 'story.edit', entityType: 'story', entityId: req.params.id,
+      before: diff.before, after: diff.after, detail: `Edited: ${diff.changed.join(', ')}`,
+    });
+  }
   res.json({ story: rows[0], warnings: lengthWarnings(rows[0]) });
 }));
 
-// POST /admin/stories/bulk-status { ids: [≤20], status: 'published'|'rejected'|'draft', publishDate?: 'today' }
-// Only stories waiting for review (or drafts) change. Publishing stamps them
-// like the single route; publishDate 'today' moves them into today's digest.
+// POST /admin/stories/bulk-status { ids: [≤20], status: 'published'|'rejected'|'draft', publishDate? }
+// "Approve the whole digest": only stories waiting for review (or drafts)
+// change, each recorded in the history. Publishing stamps them like the single
+// route. publishDate ('today', 'tomorrow' or YYYY-MM-DD, today or later) moves
+// them to that day; without it each keeps its own date, which must not have
+// passed. Approved stories for a later day are scheduled: students see them
+// only on that day.
 const BULK_STATUSES = ['published', 'rejected', 'draft'];
+function readPublishDate(value, today) {
+  if (value === undefined) return { date: null };
+  if (value === 'today') return { date: today };
+  if (value === 'tomorrow') return { date: addDays(today, 1) };
+  if (isDateString(value) && value >= today) return { date: value };
+  return { error: "publishDate must be 'today', 'tomorrow' or a date (YYYY-MM-DD) that has not passed" };
+}
 router.post('/stories/bulk-status', handle(async (req, res) => {
-  const { ids, status, publishDate } = req.body || {};
+  const { ids, status } = req.body || {};
   if (!Array.isArray(ids) || !ids.length || ids.length > 20) return bad(res, 'ids must list 1 to 20 stories');
   if (!BULK_STATUSES.includes(status)) return bad(res, `status must be one of ${BULK_STATUSES.join(', ')}`);
-  if (publishDate !== undefined && publishDate !== 'today') return bad(res, "publishDate can only be 'today'");
+  const today = localDate();
+  const { date: publishDate, error } = readPublishDate(req.body.publishDate, today);
+  if (error) return bad(res, error);
   const stamp = reviewStamp(req, status);
-  if (status === 'published' && publishDate === 'today') stamp.publish_date = localDate();
+  if (status === 'published' && publishDate) stamp.publish_date = publishDate;
   const results = [];
+  const history = [];
   for (const id of [...new Set(ids.map(String))]) {
     if (!isUuid(id)) { results.push({ id, ok: false, reason: 'not a story id' }); continue; }
+    const before = check(await supabase.from('ca_stories').select('status, publish_date').eq('id', id).maybeSingle());
+    if (!before) { results.push({ id, ok: false, reason: 'story not found' }); continue; }
+    if (!['review', 'draft'].includes(before.status)) { results.push({ id, ok: false, reason: `not waiting for review (it is ${before.status})` }); continue; }
+    if (status === 'published' && !publishDate && before.publish_date < today) { results.push({ id, ok: false, reason: pastDateError(before.publish_date) }); continue; }
     const rows = check(await supabase.from('ca_stories').update(stamp).eq('id', id).in('status', ['review', 'draft']).select('id, status, publish_date'));
-    if (rows?.length) { results.push({ id, ok: true, status: rows[0].status, publish_date: rows[0].publish_date }); continue; }
-    const existing = check(await supabase.from('ca_stories').select('status').eq('id', id).maybeSingle());
-    results.push({ id, ok: false, reason: existing ? `not waiting for review (it is ${existing.status})` : 'story not found' });
+    if (!rows?.length) { results.push({ id, ok: false, reason: 'it changed while saving; reload and try again' }); continue; }
+    const row = rows[0];
+    results.push({ id, ok: true, status: row.status, publish_date: row.publish_date });
+    history.push({
+      actor: req.editorEmail, action: `story.${status}`, entityType: 'story', entityId: id,
+      before: { status: before.status, publish_date: before.publish_date }, after: { status: row.status, publish_date: row.publish_date },
+      detail: status === 'published' ? `Approved with the digest, ${scheduleNote(row.publish_date, today)}` : 'Changed with the digest',
+    });
   }
+  await audit.record(history);
   res.json({ updated: results.filter((r) => r.ok).length, results });
 }));
 
@@ -188,7 +269,7 @@ router.post('/stories/:id/status', handle(async (req, res) => {
   const { status } = req.body || {};
   if (!STATUSES.includes(status)) return bad(res, `status must be one of ${STATUSES.join(', ')}`);
   if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Story not found' });
-  const story = await changeStatus(res, 'ca_stories', req.params.id, status, reviewStamp(req, status), 'Story');
+  const story = await changeStatus(req, res, 'ca_stories', req.params.id, status, reviewStamp(req, status), 'Story');
   if (story) res.json({ story });
 }));
 
@@ -299,7 +380,10 @@ router.post('/quiz', handle(async (req, res) => {
   if (link.error) return bad(res, link.error);
   const saved = check(await supabase.from('ca_quiz_questions')
     .insert({ ...patch, week_start: weekStart, age_group: ageGroup, status: 'review' }).select('*'));
-  res.status(201).json({ question: Array.isArray(saved) ? saved[0] : saved, warnings: link.warnings });
+  const question = Array.isArray(saved) ? saved[0] : saved;
+  await audit.record({ actor: req.editorEmail, action: 'quiz_question.create', entityType: 'quiz_question', entityId: question?.id,
+    after: { status: 'review', week_start: weekStart, age_group: ageGroup }, detail: 'Written by an editor' });
+  res.status(201).json({ question, warnings: link.warnings });
 }));
 
 router.patch('/quiz/:id', handle(async (req, res) => {
@@ -310,6 +394,11 @@ router.patch('/quiz/:id', handle(async (req, res) => {
   const link = patch.story_id ? await checkStoryLink(patch.story_id, existing.week_start) : { warnings: [] };
   if (link.error) return bad(res, link.error);
   const rows = check(await supabase.from('ca_quiz_questions').update(patch).eq('id', req.params.id).select('*'));
+  const diff = audit.changedFields(existing, rows[0], Object.keys(patch));
+  if (diff.changed.length) {
+    await audit.record({ actor: req.editorEmail, action: 'quiz_question.edit', entityType: 'quiz_question', entityId: req.params.id,
+      before: diff.before, after: diff.after, detail: `Edited: ${diff.changed.join(', ')}` });
+  }
   res.json({ question: rows[0], warnings: link.warnings });
 }));
 
@@ -318,7 +407,7 @@ router.post('/quiz/:id/status', handle(async (req, res) => {
   if (!STATUSES.includes(status)) return bad(res, `status must be one of ${STATUSES.join(', ')}`);
   if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Question not found' });
   const { is_true_fact: _ignored, ...stamp } = reviewStamp(req, status);
-  const question = await changeStatus(res, 'ca_quiz_questions', req.params.id, status, stamp, 'Question');
+  const question = await changeStatus(req, res, 'ca_quiz_questions', req.params.id, status, stamp, 'Question');
   if (question) res.json({ question });
 }));
 
@@ -333,6 +422,8 @@ router.post('/quiz/publish', handle(async (req, res) => {
   const { is_true_fact: _ignored, ...stamp } = reviewStamp(req, 'published');
   const rows = check(await supabase.from('ca_quiz_questions').update(stamp)
     .eq('week_start', weekStart).eq('age_group', ageGroup).in('status', ['draft', 'review']).select('id'));
+  await audit.record((rows || []).map((r) => ({ actor: req.editorEmail, action: 'quiz_question.published', entityType: 'quiz_question',
+    entityId: r.id, after: { status: 'published' }, detail: `Approved with the ${ageGroup} quiz for the week of ${weekStart}` })));
   res.json({ published: rows?.length || 0 });
 }));
 

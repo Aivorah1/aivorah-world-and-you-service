@@ -13,6 +13,7 @@ const UNIQUE_KEYS = {
 
 function createFakeSupabase() {
   let tables = {};
+  let failing = {};
   const calls = [];
 
   const table = (name) => (tables[name] = tables[name] || []);
@@ -48,6 +49,7 @@ function createFakeSupabase() {
 
     run() {
       calls.push({ table: this.name, mode: this.mode, payload: this.payload, options: this.options });
+      if (failing[this.name]) return { data: null, error: failing[this.name] };
       const rows = table(this.name);
       if (this.mode === 'upsert') {
         const keys = UNIQUE_KEYS[this.name];
@@ -137,7 +139,9 @@ function createFakeSupabase() {
     __seed(name, rows) { table(name).push(...rows.map((r) => ({ ...r }))); },
     __rows(name) { return table(name); },
     __calls: calls,
-    __reset() { tables = {}; calls.length = 0; client.rpc.mockClear(); },
+    // Every query on `name` answers with `error` (e.g. a missing table, code 42P01).
+    __failTable(name, error) { failing[name] = error; },
+    __reset() { tables = {}; failing = {}; calls.length = 0; client.rpc.mockClear(); },
   };
   return client;
 }

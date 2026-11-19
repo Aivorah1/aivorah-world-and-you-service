@@ -1,8 +1,14 @@
 // The daily Current Affairs pipeline: collect, select, verify, write, save.
 // Every saved story waits for an editor: status 'review', is_true_fact false.
 // Nothing here ever publishes.
+//
+// It prepares the NEXT day's digest (publish_date = tomorrow, India time), so
+// editors review and approve during the day and the approved stories appear
+// for students the next morning. CA_DIGEST_DAYS_AHEAD (0-3, default 1) changes
+// how far ahead; 0 is the old same-day behaviour.
 const crypto = require('crypto');
-const { localDate } = require('../services/content');
+const { localDate, addDays } = require('../services/content');
+const audit = require('../services/audit');
 const { collect } = require('./collect');
 const { select } = require('./select');
 const { verify } = require('./verify');
@@ -12,13 +18,13 @@ const { createLlm } = require('./llm');
 const REVIEW_STATUS = 'review';
 
 // One ca_stories row from a written story.
-function toRow(story, { today, rank }) {
+function toRow(story, { publishDate, rank }) {
   const w = story.written;
   const [w1, w2, w3] = w.words;
   const v = story.verification;
   return {
     category: story.category,
-    publish_date: today,
+    publish_date: publishDate,
     priority: Math.round(story.score * 10) + Math.max(0, 7 - rank), // higher = more important
     status: REVIEW_STATUS,
     is_true_fact: false,
@@ -40,8 +46,18 @@ function toRow(story, { today, rank }) {
 async function saveRows(supabase, rows, report) {
   for (const row of rows) {
     if (row.status !== REVIEW_STATUS || row.is_true_fact !== false) throw new Error('The pipeline may only save stories for review');
-    const { error } = await supabase.from('ca_stories').insert(row).select('id');
-    if (!error) { report.saved++; continue; }
+    const { data, error } = await supabase.from('ca_stories').insert(row).select('id');
+    if (!error) {
+      report.saved++;
+      const id = Array.isArray(data) ? data[0]?.id : data?.id;
+      // The pipeline only ever creates stories for review; the history says so.
+      await audit.record({
+        actor: 'pipeline', action: 'story.collected', entityType: 'story', entityId: id,
+        after: { status: row.status, publish_date: row.publish_date },
+        detail: `Collected from ${row.source} for ${row.publish_date}: ${row.review_notes}`,
+      }, { client: supabase });
+      continue;
+    }
     if (error.code === '23505') report.skipped.push({ title: row.title_kid, reason: 'already saved (same source link)' });
     else report.skipped.push({ title: row.title_kid, reason: `save failed: ${error.message}` });
   }
@@ -54,9 +70,10 @@ async function saveRows(supabase, rows, report) {
 async function runDailyPipeline({ supabase, fetchImpl, llm = createLlm(), now = new Date(), dryRun = false, env = process.env } = {}) {
   const runId = crypto.randomUUID();
   const today = localDate(now);
+  const publishDate = addDays(today, daysAhead(env));
   const writesEnabled = !dryRun && String(env.CA_PIPELINE_ENABLED || '').toLowerCase() === 'true';
   const report = {
-    runId, date: today, startedAt: now.toISOString(), mode: writesEnabled ? 'write' : 'dry-run',
+    runId, date: publishDate, runDate: today, startedAt: now.toISOString(), mode: writesEnabled ? 'write' : 'dry-run',
     ...(dryRun || writesEnabled ? {} : { note: 'CA_PIPELINE_ENABLED is not "true": nothing was saved.' }),
     feeds: {}, collected: {}, selected: {}, verification: {}, written: 0, saved: 0, skipped: [], rows: [],
   };
@@ -75,7 +92,7 @@ async function runDailyPipeline({ supabase, fetchImpl, llm = createLlm(), now = 
   report.written = written.report.written;
   report.skipped.push(...written.report.skipped);
 
-  const rows = written.stories.map((s, rank) => toRow(s, { today, rank }));
+  const rows = written.stories.map((s, rank) => toRow(s, { publishDate, rank }));
   if (writesEnabled) await saveRows(supabase, rows, report);
   else report.rows = rows;
   report.aiCalls = { ...llm.used };
@@ -92,4 +109,12 @@ function summarize(report) {
     + `written ${report.written}; saved ${report.saved}; skipped ${report.skipped.length}`;
 }
 
-module.exports = { runDailyPipeline, toRow, summarize, REVIEW_STATUS };
+// How many days ahead the digest is prepared: CA_DIGEST_DAYS_AHEAD, 0 to 3, default 1 (tomorrow).
+function daysAhead(env = process.env) {
+  const raw = env.CA_DIGEST_DAYS_AHEAD;
+  if (raw === undefined || raw === '') return 1;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 && n <= 3 ? n : 1;
+}
+
+module.exports = { runDailyPipeline, toRow, summarize, daysAhead, REVIEW_STATUS };
