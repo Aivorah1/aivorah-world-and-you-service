@@ -18,8 +18,15 @@ function missingSettingsMessage(tag, missing) {
 
 // A daily run that could not pick any stories because a step errored (e.g. the
 // AI call failed) must fail the job, not report success with nothing written.
+// Saving errors too: stories were written but the database refused every one
+// (e.g. a migration not run), so nothing reaches the editors. Stories skipped
+// only because they were saved before are fine.
 function dailyRunFailure(report) {
   if (report?.selected?.error) return `story selection failed: ${report.selected.error}`;
+  const saveErrors = (report?.skipped || []).filter((s) => String(s?.reason || '').startsWith('save failed'));
+  if (!report?.saved && saveErrors.length) {
+    return `none of the ${saveErrors.length} written stories could be saved: ${saveErrors[0].reason}`;
+  }
   return null;
 }
 
