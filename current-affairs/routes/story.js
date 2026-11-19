@@ -1,6 +1,6 @@
 const express = require('express');
 const supabase = require('../../services/supabase');
-const { normalizeAgeGroup, AGE_GROUP_NAMES, toStory, isUuid } = require('../services/content');
+const { normalizeAgeGroup, AGE_GROUP_NAMES, toStory, isUuid, localDate } = require('../services/content');
 const { check } = require('../services/db');
 const { handle } = require('./helpers');
 
@@ -14,7 +14,9 @@ router.get('/:id', handle(async (req, res) => {
   if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Story not found' });
 
   const row = check(await supabase.from('ca_stories').select('*')
-    .eq('id', req.params.id).eq('status', 'published').maybeSingle());
+    .eq('id', req.params.id).eq('status', 'published')
+    // An approved story scheduled for a later day stays hidden until that day.
+    .lte('publish_date', localDate()).maybeSingle());
   if (!row) return res.status(404).json({ error: 'Story not found' });
 
   res.json({ story: toStory(row, ageGroup) });

@@ -1,5 +1,27 @@
 # CHANGELOG — Current Affairs Module
 
+## 2026-11-19 — Editorial approval: tomorrow's digest, approve all, schedule, history
+
+- **The pipeline prepares tomorrow's digest.** Stories it collects are dated
+  the next day (India time) and saved for review only. Editors approve them
+  during the day; students see them the next morning. `CA_DIGEST_DAYS_AHEAD`
+  (0-3, default 1) changes how far ahead; 0 is the old same-day behaviour.
+- **Approve the whole digest.** `POST /admin/stories/bulk-status` accepts
+  `publishDate` `'today'`, `'tomorrow'` or a date that has not passed (before:
+  only `'today'`). Without it each story keeps its own date. The admin tool
+  groups the review queue by day with an "Approve all" button.
+- **Scheduling.** An approved (published) story dated later is scheduled: the
+  digest and `GET /story/:id` hide it until its day (the story route now
+  checks `publish_date <= today`). A story dated in a past day cannot be
+  approved (it would never be shown).
+- **Approval history.** Every create, edit (fields changed, with the text they
+  replaced), approve, reject, unpublish and archive of a story or quiz
+  question is recorded in `ca_audit_log` (aivorah-db
+  `0029_current_affairs_audit_log.sql`), including the pipeline's collected
+  stories (actor `pipeline`). `GET /admin/stories/:id/history` lists it.
+  Until the migration is run, changes still work and each unrecorded entry is
+  logged as `[ca-audit] NOT RECORDED`.
+
 ## 2026-11-16 — The World & You: GK fact from the book, safer On This Day
 
 - **GK fact** (`GET /daily-tidbit`, GK tab card) now comes from today's

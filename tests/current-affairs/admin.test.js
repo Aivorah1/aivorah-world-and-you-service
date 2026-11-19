@@ -171,12 +171,42 @@ describe('bulk review', () => {
     expect(digest.body.stories.map((s) => s.id).sort()).toEqual([a.id, b.id].sort());
   });
 
-  test('reject selected; publishing without a date keeps each story’s own date', async () => {
+  test('reject selected; publishing without a date keeps each story’s own date, if it has not passed', async () => {
     const a = storyRow({ n: 1, status: 'review', publish_date: '2026-11-08' });
-    const b = storyRow({ n: 2, status: 'review', publish_date: '2026-11-07' });
-    supabase.__seed('ca_stories', [a, b]);
+    const b = storyRow({ n: 2, status: 'review', publish_date: '2026-11-10' });
+    const old = storyRow({ n: 3, status: 'review', publish_date: '2026-11-07' });
+    supabase.__seed('ca_stories', [a, b, old]);
     expect((await send('post', '/stories/bulk-status', { ids: [a.id], status: 'rejected' })).body.results[0]).toMatchObject({ ok: true, status: 'rejected' });
-    expect((await send('post', '/stories/bulk-status', { ids: [b.id], status: 'published' })).body.results[0]).toMatchObject({ ok: true, publish_date: '2026-11-07' });
+    expect((await send('post', '/stories/bulk-status', { ids: [b.id], status: 'published' })).body.results[0]).toMatchObject({ ok: true, publish_date: '2026-11-10' });
+    const past = (await send('post', '/stories/bulk-status', { ids: [old.id], status: 'published' })).body.results[0];
+    expect(past).toMatchObject({ ok: false });
+    expect(past.reason).toMatch(/2026-11-07, which has passed/);
+    expect(supabase.__rows('ca_stories').find((r) => r.id === old.id).status).toBe('review');
+  });
+
+  test("approve the whole of tomorrow's digest: scheduled, hidden from students until that day", async () => {
+    const stories = [1, 2, 3].map((n) => storyRow({ n, status: 'review', publish_date: '2026-11-10', review_notes: 'AUTO: VERIFIED' }));
+    supabase.__seed('ca_stories', stories);
+    const res = await send('post', '/stories/bulk-status', { ids: stories.map((s) => s.id), status: 'published', publishDate: 'tomorrow' });
+    expect(res.body.updated).toBe(3);
+    expect(res.body.results.every((r) => r.ok && r.publish_date === '2026-11-10')).toBe(true);
+    // Today (9 Nov) students see nothing, and the story page refuses a scheduled story.
+    expect((await request(app).get('/current-affairs/digest/today?ageGroup=7-12')).body.stories).toHaveLength(0);
+    expect((await request(app).get(`/current-affairs/story/${stories[0].id}?ageGroup=7-12`)).status).toBe(404);
+    // Each approval is in the history with the editor and the day it goes live.
+    const history = supabase.__rows('ca_audit_log');
+    expect(history).toHaveLength(3);
+    expect(history[0]).toMatchObject({ actor: EDITOR, action: 'story.published', before: { status: 'review' }, after: { status: 'published', publish_date: '2026-11-10' } });
+    expect(history[0].detail).toMatch(/scheduled: students see it on 2026-11-10/);
+  });
+
+  test('publishDate can be today, tomorrow or a date that has not passed', async () => {
+    const s = storyRow({ n: 1, status: 'review', publish_date: '2026-11-09' });
+    supabase.__seed('ca_stories', [s]);
+    expect((await send('post', '/stories/bulk-status', { ids: [s.id], status: 'published', publishDate: '2026-11-08' })).status).toBe(400);
+    expect((await send('post', '/stories/bulk-status', { ids: [s.id], status: 'published', publishDate: 'someday' })).status).toBe(400);
+    const res = await send('post', '/stories/bulk-status', { ids: [s.id], status: 'published', publishDate: '2026-11-12' });
+    expect(res.body.results[0]).toMatchObject({ ok: true, publish_date: '2026-11-12' });
   });
 
   test('checks its input and needs an editor', async () => {
@@ -184,7 +214,7 @@ describe('bulk review', () => {
     expect((await send('post', '/stories/bulk-status', { ids, status: 'published' })).status).toBe(400);
     expect((await send('post', '/stories/bulk-status', { ids: [], status: 'published' })).status).toBe(400);
     expect((await send('post', '/stories/bulk-status', { ids: [ids[0]], status: 'archived' })).status).toBe(400);
-    expect((await send('post', '/stories/bulk-status', { ids: [ids[0]], status: 'published', publishDate: '2026-01-01' })).status).toBe(400);
+    expect((await send('post', '/stories/bulk-status', { ids: [ids[0]], status: 'published', publishDate: '2026-01-01' })).status).toBe(400); // passed
     expect((await send('post', '/stories/bulk-status', { ids: [ids[0]], status: 'published' }, 'kid@school.in')).status).toBe(403);
   });
 
@@ -347,5 +377,48 @@ describe('analytics', () => {
     expect(res.body.metrics.digestCompletionRate.value).toBeNull(); // no data yet: no made-up zeros
     expect((await get('/analytics?from=2026-11-09&to=2026-11-01')).status).toBe(400);
     expect((await get('/analytics?from=2025-01-01&to=2026-11-09')).status).toBe(400);
+  });
+});
+
+describe('approval history', () => {
+  test('approving, editing and rejecting are each recorded with who and what changed; the editor can read it', async () => {
+    const row = storyRow({ status: 'review', publish_date: '2026-11-10', title_kid: 'Old title' });
+    supabase.__seed('ca_stories', [row]);
+    await send('patch', `/stories/${row.id}`, { title_kid: 'New title', priority: row.priority });
+    await send('post', `/stories/${row.id}/status`, { status: 'published' });
+    await send('post', `/stories/${row.id}/status`, { status: 'rejected' });
+    const history = supabase.__rows('ca_audit_log');
+    expect(history.map((h) => h.action)).toEqual(['story.edit', 'story.published', 'story.rejected']);
+    // Only the changed field is listed, with the text it replaced.
+    expect(history[0]).toMatchObject({ actor: EDITOR, before: { title_kid: 'Old title' }, after: { title_kid: 'New title' }, detail: 'Edited: title_kid' });
+    expect(history[1].detail).toMatch(/scheduled: students see it on 2026-11-10/);
+    expect(history[2]).toMatchObject({ before: { status: 'published' }, after: { status: 'rejected' } });
+
+    const res = await get(`/stories/${row.id}/history`);
+    expect(res.status).toBe(200);
+    expect(res.body.available).toBe(true);
+    expect(res.body.entries).toHaveLength(3);
+    expect((await get(`/stories/${row.id}/history`, 'kid@school.in')).status).toBe(403);
+  });
+
+  test("a story dated in the past can't be approved; a new story can't be published into the past", async () => {
+    const row = storyRow({ status: 'review', publish_date: '2026-11-08' });
+    supabase.__seed('ca_stories', [row]);
+    const res = await send('post', `/stories/${row.id}/status`, { status: 'published' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/has passed/);
+    expect(supabase.__rows('ca_audit_log')).toHaveLength(0);
+  });
+
+  test('if the history table is missing, the change still happens (and the history says so)', async () => {
+    const row = storyRow({ status: 'review', publish_date: '2026-11-09' });
+    supabase.__seed('ca_stories', [row]);
+    supabase.__failTable('ca_audit_log', { code: '42P01', message: 'relation "ca_audit_log" does not exist' });
+    const err = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await send('post', `/stories/${row.id}/status`, { status: 'published' });
+    expect(res.body.story.status).toBe('published');
+    expect(err.mock.calls.some((c) => String(c[0]).includes('[ca-audit] NOT RECORDED'))).toBe(true);
+    expect((await get(`/stories/${row.id}/history`)).body).toEqual({ available: false, entries: [] });
+    err.mockRestore();
   });
 });

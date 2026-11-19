@@ -243,14 +243,19 @@ describe('runDailyPipeline', () => {
     { index: 1, category: 'science', score: 4, why: 'w', key_facts: ['A solar mission sent images'] },
   ];
 
-  test('saved rows are always for review, never true facts, with the AUTO note', async () => {
+  test("saved rows are tomorrow's digest, always for review, never true facts, with the AUTO note", async () => {
     const { llm } = fakeAi({ selected, verdicts: [{ result: 'VERIFIED', note: 'ok' }, { result: 'UNCLEAR', note: 'Check the date of the images.' }] });
     const report = await runDailyPipeline({ supabase, fetchImpl: fetchFrom(pages()), llm, now: NOW, env: { CA_PIPELINE_ENABLED: 'true' } });
-    expect(report).toMatchObject({ mode: 'write', saved: 2, written: 2 });
+    expect(report).toMatchObject({ mode: 'write', saved: 2, written: 2, date: '2026-11-16', runDate: '2026-11-15' });
     const rows = supabase.__rows('ca_stories');
     expect(rows).toHaveLength(2);
+    // Prepared on the 15th for the 16th: editors approve it today, students read it tomorrow.
+    const history = supabase.__rows('ca_audit_log');
+    expect(history).toHaveLength(2);
+    for (const h of history) expect(h).toMatchObject({ actor: 'pipeline', action: 'story.collected', entity_type: 'story', after: { status: 'review', publish_date: '2026-11-16' } });
+    expect(history.map((h) => h.entity_id).sort()).toEqual(rows.map((r) => r.id).sort());
     for (const r of rows) {
-      expect(r).toMatchObject({ status: 'review', is_true_fact: false, publish_date: '2026-11-15', source: 'The Hindu' });
+      expect(r).toMatchObject({ status: 'review', is_true_fact: false, publish_date: '2026-11-16', source: 'The Hindu' });
       expect(r.source_url_hash).toBe(urlHash(r.source_url));
       expect(r.title_young).toBeUndefined();
     }
@@ -273,6 +278,15 @@ describe('runDailyPipeline', () => {
     expect(report.rows).toHaveLength(2);
     expect(report.rows.every((r) => r.status === 'review' && r.is_true_fact === false)).toBe(true);
     expect(supabase.__rows('ca_stories')).toHaveLength(0);
+  });
+
+  test('CA_DIGEST_DAYS_AHEAD sets how far ahead (0 = same day); bad values fall back to tomorrow', async () => {
+    const { daysAhead } = require('../../current-affairs/pipeline/run');
+    expect([daysAhead({}), daysAhead({ CA_DIGEST_DAYS_AHEAD: '0' }), daysAhead({ CA_DIGEST_DAYS_AHEAD: '2' }), daysAhead({ CA_DIGEST_DAYS_AHEAD: '9' }), daysAhead({ CA_DIGEST_DAYS_AHEAD: 'x' })])
+      .toEqual([1, 0, 2, 1, 1]);
+    const { llm } = fakeAi({ selected: selected.slice(0, 1) });
+    await runDailyPipeline({ supabase, fetchImpl: fetchFrom(pages()), llm, now: NOW, env: { CA_PIPELINE_ENABLED: 'true', CA_DIGEST_DAYS_AHEAD: '0' } });
+    expect(supabase.__rows('ca_stories')[0].publish_date).toBe('2026-11-15');
   });
 
   test('without CA_PIPELINE_ENABLED=true nothing is written', async () => {

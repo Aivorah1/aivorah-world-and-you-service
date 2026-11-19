@@ -39,7 +39,7 @@ function startInBackground(res, label, job) {
   res.status(202).json({ runId, started: true });
 }
 
-// POST /current-affairs/pipeline/run: today's stories, saved for review only.
+// POST /current-affairs/pipeline/run: tomorrow's stories (CA_DIGEST_DAYS_AHEAD), saved for review only.
 router.post('/run', requireSecret, (req, res) => {
   startInBackground(res, 'daily', async () => {
     const report = await daily.runDailyPipeline({ supabase });
